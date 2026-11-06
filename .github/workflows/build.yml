@@ -14,7 +14,18 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install wake-word tokenizer
+        run: pip install sherpa-onnx==1.13.8 sentencepiece pypinyin
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/voice-models
+          key: voice-models-${{ hashFiles('scripts/fetch_models.sh') }}
+      - name: Download offline voice models
+        run: bash scripts/fetch_models.sh
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.14.3"
@@ -43,6 +54,8 @@ jobs:
         run: gradle :policy:test --stacktrace
       - name: Build release APK
         run: gradle :app:assembleRelease --stacktrace
+      - name: Report resolved LiteRT-LM version
+        run: gradle :app:dependencies --configuration releaseRuntimeClasspath | grep -m3 -E 'litertlm|sherpa' || true
       - name: Check manifest has no internet access
         run: |
           AAPT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/aapt2"

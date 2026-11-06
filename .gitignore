@@ -6,3 +6,5 @@ local.properties
 *.jks
 *.keystore
 *.litertlm
+app/libs/
+app/src/main/assets/models/

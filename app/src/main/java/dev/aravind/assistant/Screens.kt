@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
 import android.app.KeyguardManager
@@ -33,6 +34,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -52,6 +54,8 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import dev.aravind.assistant.policy.Category
 import kotlinx.coroutines.launch
+import java.text.DateFormat
+import java.util.Date
 
 private fun FragmentActivity.protectWindow() {
     window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
@@ -140,6 +144,9 @@ private val runtimePermissions = listOf(
     "Contacts" to Manifest.permission.READ_CONTACTS,
     "Phone calls" to Manifest.permission.CALL_PHONE,
     "SMS" to Manifest.permission.SEND_SMS,
+    "Phone state (AI calls)" to Manifest.permission.READ_PHONE_STATE,
+    "Caller number (AI calls)" to Manifest.permission.READ_CALL_LOG,
+    "Answer calls (AI calls)" to Manifest.permission.ANSWER_PHONE_CALLS,
 )
 
 private val categoryNames = mapOf(
@@ -163,13 +170,35 @@ private fun HomeScreen(activity: FragmentActivity) {
     val refreshKey = refresh
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
-    val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+    var modelPath by remember { mutableStateOf(ModelStore.path(activity).orEmpty()) }
+    var allowedNumbers by remember { mutableStateOf(CallRules.allowedNumbers(activity)) }
+    val paused by AssistantRuntime.pausedUntil.collectAsState()
+    val modelBrowser = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            val path = ModelStore.pathFromPicker(uri)
+            if (path != null) {
+                modelPath = path
+                message = "Path filled in. Tap Use this path."
+            } else {
+                scope.launch {
+                    runCatching {
+                        val sha = ModelStore.copyIn(activity, uri) { bytes -> message = "Copying model: ${bytes / (1 shl 20)} MB" }
+                        message = "Model copied. SHA-256: ${sha.take(16)}..."
+                        modelPath = ModelStore.path(activity).orEmpty()
+                    }.onFailure { message = it.message ?: "Model copy failed" }
+                    refresh++
+                }
+            }
+        }
+    }
+    val modelCopier = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
             scope.launch {
                 runCatching {
-                    val sha = ModelStore.import(activity, uri) { bytes -> message = "Copying model: ${bytes / (1 shl 20)} MB" }
-                    message = "Model imported. SHA-256: ${sha.take(16)}..."
-                }.onFailure { message = "Model import failed" }
+                    val sha = ModelStore.copyIn(activity, uri) { bytes -> message = "Copying model: ${bytes / (1 shl 20)} MB" }
+                    message = "Model copied. SHA-256: ${sha.take(16)}..."
+                    modelPath = ModelStore.path(activity).orEmpty()
+                }.onFailure { message = it.message ?: "Model copy failed" }
                 refresh++
             }
         }
@@ -206,6 +235,15 @@ private fun HomeScreen(activity: FragmentActivity) {
                         },
                         Modifier.fillMaxWidth(),
                     ) { Text("Talk") }
+                    if (paused > System.currentTimeMillis()) {
+                        OutlinedButton(onClick = { AssistantRuntime.resume(activity) }, Modifier.fillMaxWidth()) { Text("Resume") }
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { AssistantRuntime.pause(activity, 15) }) { Text("15 min") }
+                            OutlinedButton(onClick = { AssistantRuntime.pause(activity, 60) }) { Text("1 hour") }
+                            OutlinedButton(onClick = { AssistantRuntime.pause(activity, null) }) { Text("Pause") }
+                        }
+                    }
                 }
             }
         }
@@ -223,7 +261,9 @@ private fun HomeScreen(activity: FragmentActivity) {
         Text("Tool switches", style = MaterialTheme.typography.titleSmall)
         Category.entries.forEach { category ->
             val enabled = remember(refreshKey) { Gates.enabled(activity, category) }
-            ToggleRow(categoryNames.getValue(category), null, enabled) { on ->
+            val used = remember(refreshKey) { Gates.lastUsed(activity, category) }
+            val usedText = if (used > 0) "Last used ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(used))}" else "Not used yet"
+            ToggleRow(categoryNames.getValue(category), usedText, enabled) { on ->
                 if (!on) {
                     Gates.set(activity, category, false)
                     refresh++
@@ -273,13 +313,133 @@ private fun HomeScreen(activity: FragmentActivity) {
         StateRow("Realme auto-start and background", "Android can't report this", "Open app info") {
             activity.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
         }
+        val allFiles = remember(refreshKey) { Environment.isExternalStorageManager() }
+        StateRow("All files access (model path)", if (allFiles) "On" else "Off", "Open settings") {
+            activity.startActivity(
+                Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.fromParts("package", packageName, null)),
+            )
+        }
         Button(onClick = { refresh++ }, Modifier.fillMaxWidth()) { Text("Refresh status") }
+
+        HorizontalDivider()
+        Text("Voice", style = MaterialTheme.typography.titleSmall)
+        val wakeOn = remember(refreshKey) { Features.wakeWord(activity) }
+        ToggleRow("Wake word: Hey Assistant", "The mic stays open while this is on", wakeOn) { on ->
+            if (!on) {
+                Features.setWakeWord(activity, false)
+                refresh++
+            } else {
+                activity.authenticate("Turn on wake word", "The microphone will stay open") { ok ->
+                    if (ok) Features.setWakeWord(activity, true)
+                    refresh++
+                }
+            }
+        }
+        val autoPause = remember(refreshKey) { Features.autoPause(activity) }
+        ToggleRow("Auto-pause wake word", "Below 15% battery, or when the phone is too hot", autoPause) { on ->
+            Features.setAutoPause(activity, on)
+            refresh++
+        }
+        val enrolled = remember(refreshKey) { VoiceId.isEnrolled(activity) }
+        StateRow("Voice ID", if (enrolled) "Saved" else "Not set up, so fingerprint is required", if (enrolled) "Delete" else "Set up") {
+            if (enrolled) {
+                VoiceId.delete(activity)
+                refresh++
+            } else if (!armed) {
+                message = "Turn on the assistant first"
+            } else {
+                activity.authenticate("Set up Voice ID", "You will repeat five phrases") { ok ->
+                    if (ok) AssistantService.instance?.enrollVoice()
+                }
+            }
+        }
+
+        HorizontalDivider()
+        Text("AI call answering (experimental)", style = MaterialTheme.typography.titleSmall)
+        val callsOn = remember(refreshKey) { Features.aiCalls(activity) }
+        ToggleRow("Answer allowed callers", "Uses speakerphone and may not work on this phone", callsOn) { on ->
+            if (!on) {
+                Features.setAiCalls(activity, false)
+                refresh++
+            } else {
+                activity.authenticate("Turn on AI calls", "Allowed callers will reach the AI") { ok ->
+                    if (ok) Features.setAiCalls(activity, true)
+                    refresh++
+                }
+            }
+        }
+        OutlinedTextField(
+            value = allowedNumbers,
+            onValueChange = { allowedNumbers = it },
+            label = { Text("Allowed numbers, separated by commas") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedButton(
+            onClick = {
+                activity.authenticate("Change allowed callers", "Confirm it's you") { ok ->
+                    if (ok) {
+                        CallRules.setAllowedNumbers(activity, allowedNumbers)
+                        message = "Allowed callers saved"
+                    }
+                }
+            },
+            Modifier.fillMaxWidth(),
+        ) { Text("Save allowed numbers") }
+        OutlinedButton(
+            onClick = {
+                activity.authenticate("View call messages", "Confirm it's you") { ok ->
+                    if (ok) message = CallMessages.list(activity).ifEmpty { listOf("No call messages") }.joinToString("\n")
+                }
+            },
+            Modifier.fillMaxWidth(),
+        ) { Text("View call messages") }
 
         HorizontalDivider()
         Text("Gemma model", style = MaterialTheme.typography.titleSmall)
         val modelHash = remember(refreshKey) { ModelStore.hash(activity) }
-        StateRow("Local model", modelHash?.let { "Imported: ${it.take(12)}..." } ?: "Not imported", "Import file") {
-            modelPicker.launch(arrayOf("*/*"))
+        val modelProblem = remember(refreshKey) { ModelStore.problem(activity) }
+        Text(
+            modelProblem ?: "Ready. SHA-256: ${modelHash.orEmpty().take(16)}...",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+            value = modelPath,
+            onValueChange = { modelPath = it },
+            label = { Text("Model path") },
+            placeholder = { Text("/storage/emulated/0/Download/gemma-4-E2B-it.litertlm") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { modelBrowser.launch(arrayOf("*/*")) }) { Text("Browse") }
+            Button(
+                onClick = {
+                    scope.launch {
+                        runCatching {
+                            val sha = ModelStore.usePath(activity, modelPath) { bytes -> message = "Checking model: ${bytes / (1 shl 20)} MB" }
+                            message = "Model selected. SHA-256: ${sha.take(16)}..."
+                        }.onFailure { message = it.message ?: "That model can't be used" }
+                        refresh++
+                    }
+                },
+            ) { Text("Use this path") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { modelCopier.launch(arrayOf("*/*")) }) { Text("Copy into app") }
+            OutlinedButton(
+                onClick = {
+                    message = "Loading the model. This can take a minute..."
+                    scope.launch {
+                        runCatching { GemmaEngine.test(activity) }
+                            .onSuccess { message = "Model works: $it" }
+                            .onFailure { message = "Model failed: ${it.message ?: it.javaClass.simpleName}" }
+                    }
+                },
+            ) { Text("Test model") }
+        }
+        val gpu = remember(refreshKey) { ModelStore.useGpu(activity) }
+        ToggleRow("Use GPU", "Off uses the CPU, which is slower but more reliable", gpu) { on ->
+            ModelStore.setUseGpu(activity, on)
+            refresh++
         }
 
         HorizontalDivider()
@@ -292,6 +452,8 @@ private fun HomeScreen(activity: FragmentActivity) {
             onClick = {
                 AssistantRuntime.stopAll(activity, "lockdown")
                 Category.entries.forEach { Gates.set(activity, it, false) }
+                Features.setWakeWord(activity, false)
+                Features.setAiCalls(activity, false)
                 AutomationService.instance?.disableSelf()
                 NotificationsService.instance?.requestUnbind()
                 activity.revokeSelfPermissionsOnKill(runtimePermissions.map { it.second })

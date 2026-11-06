@@ -10,8 +10,8 @@ android {
         applicationId = "dev.aravind.assistant"
         minSdk = 33
         targetSdk = 33
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
         ndk { abiFilters += "arm64-v8a" }
     }
     signingConfigs {
@@ -30,15 +30,21 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
     buildFeatures { compose = true }
-    packaging { jniLibs { useLegacyPackaging = true } }
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            pickFirsts += "**/libc++_shared.so"
+            pickFirsts += "**/libonnxruntime.so"
+        }
+    }
     // This app is sideloaded, so Play Store target-version lint rules don't apply.
     lint { checkReleaseBuilds = false }
 }
-kotlin { jvmToolchain(17) }
+kotlin { jvmToolchain(21) }
 dependencies {
     implementation(project(":policy"))
     implementation(platform("androidx.compose:compose-bom:2025.06.01"))
@@ -49,6 +55,7 @@ dependencies {
     implementation("androidx.fragment:fragment-ktx:1.8.8")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation(files("libs/sherpa-onnx-1.13.8.aar"))
     // Replace with the exact version printed by the first CI build, then keep it pinned.
     implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
 }

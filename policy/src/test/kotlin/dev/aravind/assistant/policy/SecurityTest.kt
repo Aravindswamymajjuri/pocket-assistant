@@ -179,4 +179,38 @@ class SecurityTest {
         assertFalse(CommandRouter.isStop("stop the music in spotify"))
         assertEquals(listOf("open maps", "go home"), CommandRouter.steps("open maps and then go home"))
     }
+
+    @Test fun plansAreValidatedStepByStep() {
+        val good = """{"plan":[{"tool":"open_app","args":{"name":"Maps"}},{"tool":"go_home"}]}"""
+        assertEquals(2, (ModelOutputParser.parse(good) as ModelOutput.Plan).calls.size)
+        val badStep = """{"plan":[{"tool":"open_app","args":{"name":"Maps"}},{"tool":"format_phone"}]}"""
+        assertTrue(ModelOutputParser.parse(badStep) is ModelOutput.Invalid)
+        val tooLong = "{\"plan\":[" + List(6) { "{\"tool\":\"go_home\"}" }.joinToString(",") + "]}"
+        assertTrue(ModelOutputParser.parse(tooLong) is ModelOutput.Invalid)
+    }
+
+    @Test fun spokenChallengeMatchesWordsAndDigits() {
+        assertTrue(SpokenChallenge.matches("472", "four seven two"))
+        assertTrue(SpokenChallenge.matches("472", "4 7 2."))
+        assertTrue(SpokenChallenge.matches("108", "one oh eight"))
+        assertFalse(SpokenChallenge.matches("472", "four seven"))
+        assertFalse(SpokenChallenge.matches("472", "yes"))
+        assertEquals(3, SpokenChallenge.create().length)
+    }
+
+    @Test fun voiceMatchUsesCosineThreshold() {
+        val me = floatArrayOf(1f, 0f, 1f)
+        assertTrue(VoiceMatch.isMatch(me, floatArrayOf(0.9f, 0.1f, 1.1f)))
+        assertFalse(VoiceMatch.isMatch(me, floatArrayOf(-1f, 1f, 0f)))
+        assertFalse(VoiceMatch.isMatch(me, floatArrayOf(1f, 0f)))
+    }
+
+    @Test fun modelPathRulesRejectBadPaths() {
+        assertNull(ModelPath.problem("/storage/emulated/0/Download/gemma-4-E2B-it.litertlm"))
+        assertNotNull(ModelPath.problem(""))
+        assertNotNull(ModelPath.problem("Download/model.litertlm"))
+        assertNotNull(ModelPath.problem("/sdcard/../data/model.litertlm"))
+        assertNotNull(ModelPath.problem("/sdcard/Download/model.bin"))
+        assertNotNull(ModelPath.problem("/storage/emulated/0/Android/data/com.other/files/model.litertlm"))
+    }
 }

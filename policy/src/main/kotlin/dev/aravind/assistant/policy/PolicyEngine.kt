@@ -221,3 +221,60 @@ object AuditChain {
         return true
     }
 }
+
+/** A random spoken code, so a recording of an earlier approval can't be replayed. */
+object SpokenChallenge {
+    private val words = mapOf(
+        "zero" to '0', "oh" to '0', "o" to '0', "one" to '1', "two" to '2', "to" to '2', "too" to '2',
+        "three" to '3', "four" to '4', "for" to '4', "five" to '5', "six" to '6', "seven" to '7',
+        "eight" to '8', "ate" to '8', "nine" to '9',
+    )
+    private val random = SecureRandom()
+
+    fun create(): String = List(3) { random.nextInt(10) }.joinToString("")
+
+    fun spaced(code: String): String = code.toList().joinToString(", ")
+
+    fun matches(code: String, heard: String): Boolean {
+        val digits = heard.lowercase().split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }.joinToString("") { token ->
+            if (token.all(Char::isDigit)) token else words[token]?.toString().orEmpty()
+        }
+        return digits == code
+    }
+}
+
+object VoiceMatch {
+    const val THRESHOLD = 0.6f
+
+    fun similarity(a: FloatArray, b: FloatArray): Float {
+        if (a.size != b.size || a.isEmpty()) return -1f
+        var dot = 0f
+        var left = 0f
+        var right = 0f
+        for (i in a.indices) {
+            dot += a[i] * b[i]
+            left += a[i] * a[i]
+            right += b[i] * b[i]
+        }
+        if (left == 0f || right == 0f) return -1f
+        return dot / (kotlin.math.sqrt(left) * kotlin.math.sqrt(right))
+    }
+
+    fun isMatch(enrolled: FloatArray, sample: FloatArray): Boolean = similarity(enrolled, sample) >= THRESHOLD
+}
+
+object ModelPath {
+    /** Returns why a typed path can't be used, or null if its format is acceptable. */
+    fun problem(path: String): String? {
+        val p = path.trim()
+        return when {
+            p.isEmpty() -> "Enter the model path"
+            !p.startsWith("/") -> "Enter the full path, starting with /"
+            p.split('/').any { it == ".." } -> "The path can't contain .."
+            !p.lowercase().endsWith(".litertlm") -> "The model must be a .litertlm file"
+            p.contains("/Android/data/") || p.contains("/Android/obb/") ->
+                "Android blocks reading another app's private folder. Move the file to Download first"
+            else -> null
+        }
+    }
+}

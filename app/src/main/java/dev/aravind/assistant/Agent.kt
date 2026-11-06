@@ -11,17 +11,25 @@ import dev.aravind.assistant.policy.ModelOutputParser
 import dev.aravind.assistant.policy.PolicyContext
 import dev.aravind.assistant.policy.PolicyEngine
 import dev.aravind.assistant.policy.Source
+import dev.aravind.assistant.policy.SpokenChallenge
 import dev.aravind.assistant.policy.TaskLimits
 import dev.aravind.assistant.policy.Tool
 import dev.aravind.assistant.policy.ToolCall
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 
-class Agent(private val context: Context, private val speak: (String) -> Unit) {
+class Agent(
+    private val context: Context,
+    private val speak: suspend (String) -> Unit,
+    private val listen: suspend () -> Heard?,
+) {
     private val executor = ToolExecutor(context)
 
-    suspend fun handle(utterance: String) {
+    suspend fun handle(heard: Heard) {
+        val utterance = heard.text
+        AssistantRuntime.say("You: $utterance")
         if (CommandRouter.isStop(utterance)) {
             AssistantRuntime.stopAll(context, "voice")
             return
@@ -34,53 +42,62 @@ class Agent(private val context: Context, private val speak: (String) -> Unit) {
         val steps = if (whole?.tool?.hasRecipient == true) listOf(utterance) else CommandRouter.steps(utterance)
 
         for (step in steps) {
-            if (!AssistantRuntime.armed.value) return
-            if (!limits.tryStep()) {
-                speak("That task took too long, so I stopped")
-                return
-            }
-            val call = CommandRouter.route(step) ?: when (val output = askGemma(step)) {
-                null -> return
-                is ModelOutput.Reply -> {
-                    speak(output.text)
-                    continue
+            if (!AssistantRuntime.isActive()) return
+            val routed = CommandRouter.route(step)
+            val calls: List<ToolCall> = if (routed != null) {
+                listOf(routed)
+            } else {
+                when (val output = askGemma(step)) {
+                    null -> return
+                    is ModelOutput.Reply -> {
+                        speak(output.text)
+                        continue
+                    }
+                    is ModelOutput.Invalid -> {
+                        Audit.log(context, "model_output_rejected")
+                        speak("I couldn't work out a safe action for that")
+                        return
+                    }
+                    is ModelOutput.Call -> listOf(output.call)
+                    is ModelOutput.Plan -> output.calls
                 }
-                is ModelOutput.Invalid -> {
-                    Audit.log(context, "model_output_rejected")
-                    speak("I couldn't work out a safe action for that")
+            }
+            for (call in calls) {
+                if (!limits.tryStep()) {
+                    speak("That task took too long, so I stopped")
                     return
                 }
-                is ModelOutput.Call -> output.call
+                if (!run(call, utterance, heard.verified, tainted)) return
+                if (call.tool == Tool.READ_NOTIFICATIONS) tainted = true
+                if (steps.size > 1 || calls.size > 1) delay(700)
             }
-            if (!run(call, utterance, tainted)) return
-            if (call.tool == Tool.READ_NOTIFICATIONS) tainted = true
-            if (steps.size > 1) delay(700)
         }
     }
 
     private suspend fun askGemma(text: String): ModelOutput? {
         val raw = try {
             GemmaEngine.ask(context, text)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IllegalStateException) {
+            speak(e.message ?: "The AI model isn't ready")
+            return null
         } catch (e: Exception) {
             Audit.log(context, "model_error")
             speak("The AI model couldn't run. I can still do simple commands")
             return null
         }
-        if (raw == null) {
-            speak("Import the Gemma model in Control Center to ask me questions")
-            return null
-        }
         return ModelOutputParser.parse(raw)
     }
 
-    private suspend fun run(call: ToolCall, utterance: String, tainted: Boolean): Boolean {
+    private suspend fun run(call: ToolCall, utterance: String, verified: Boolean, tainted: Boolean): Boolean {
         val foreground = AutomationService.foregroundPackage
         val policy = PolicyContext(
-            armed = AssistantRuntime.armed.value,
+            armed = AssistantRuntime.isActive(),
             source = Source.LIVE_USER,
             inPhoneCall = AssistantRuntime.inPhoneCall(context),
             tainted = tainted,
-            voiceVerified = false, // Voice ID isn't built yet, so personal actions need your fingerprint.
+            voiceVerified = verified,
             gateEnabled = { category: Category -> Gates.enabled(context, category) },
             originalUtterance = utterance,
             foregroundPackage = foreground,
@@ -94,29 +111,47 @@ class Agent(private val context: Context, private val speak: (String) -> Unit) {
                 return false
             }
             is Decision.Allow -> Unit
-            is Decision.Confirm -> if (!approve(call, decision.readback, foreground)) return false
-            is Decision.Biometric -> if (!approve(call, decision.readback, foreground)) return false
+            is Decision.Confirm -> if (!voiceApprove(call, decision.readback, foreground)) return false
+            is Decision.Biometric -> if (!biometricApprove(call, decision.readback, foreground)) return false
         }
         if (call.tool.hasRecipient) AssistantRuntime.rateLimiter.record()
         val result = try {
             executor.execute(call)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Audit.log(context, "failed:${call.tool.id}")
             speak("That action failed")
             return false
         }
+        Gates.markUsed(context, call.tool.category)
         Audit.log(context, "done:${call.tool.id}")
         speak(result)
         return true
     }
 
+    /** Voice approval needs a fresh random code in your voice. If it fails, your fingerprint is required. */
+    private suspend fun voiceApprove(call: ToolCall, readback: String, foreground: String?): Boolean {
+        val authority: ConfirmationAuthority = AssistantRuntime.authority ?: return false
+        val code = SpokenChallenge.create()
+        speak("$readback. To confirm, say ${SpokenChallenge.spaced(code)}")
+        val answer = listen()
+        if (answer == null || !answer.verified || !SpokenChallenge.matches(code, answer.text)) {
+            Audit.log(context, "voice_confirm_failed:${call.tool.id}")
+            return biometricApprove(call, readback, foreground)
+        }
+        Audit.log(context, "voice_confirmed:${call.tool.id}")
+        val token = authority.issue(call, foreground)
+        return authority.verify(token, call, currentApp(call, foreground))
+    }
+
     /** Shows the app-built readback, then verifies a one-time token for this exact action. */
-    private suspend fun approve(call: ToolCall, readback: String, foreground: String?): Boolean {
+    private suspend fun biometricApprove(call: ToolCall, readback: String, foreground: String?): Boolean {
         val authority: ConfirmationAuthority = AssistantRuntime.authority ?: return false
         val token = authority.issue(call, foreground)
         val pending = CompletableDeferred<Boolean>()
         AssistantRuntime.pendingApproval = pending
-        speak("Please confirm: $readback")
+        speak("Please confirm on the screen")
         context.startActivity(
             Intent(context, ConfirmActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -129,15 +164,15 @@ class Agent(private val context: Context, private val speak: (String) -> Unit) {
             speak("Cancelled")
             return false
         }
-        // Screen actions must land on the same app that was open when you were asked.
-        val current = if (call.tool.category == Category.SCREEN) {
-            delay(500)
-            AutomationService.foregroundPackage
-        } else {
-            foreground
-        }
-        val valid = authority.verify(token, call, current)
+        val valid = authority.verify(token, call, currentApp(call, foreground))
         if (!valid) speak("That approval is no longer valid, so I cancelled it")
         return valid
+    }
+
+    /** Screen actions must land on the same app that was open when you were asked. */
+    private suspend fun currentApp(call: ToolCall, foreground: String?): String? {
+        if (call.tool.category != Category.SCREEN) return foreground
+        delay(500)
+        return AutomationService.foregroundPackage
     }
 }

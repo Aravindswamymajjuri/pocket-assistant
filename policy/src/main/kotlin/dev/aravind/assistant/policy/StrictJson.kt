@@ -142,10 +142,11 @@ object StrictJson {
 sealed interface ModelOutput {
     data class Reply(val text: String) : ModelOutput
     data class Call(val call: ToolCall) : ModelOutput
+    data class Plan(val calls: List<ToolCall>) : ModelOutput
     data class Invalid(val reason: String) : ModelOutput
 }
 
-/** The model must output {"reply":"..."} or {"tool":"...","args":{...}}. Anything else is rejected. */
+/** The model must output a reply, one tool call, or a plan of at most five calls. Anything else is rejected. */
 object ModelOutputParser {
     fun parse(raw: String): ModelOutput {
         val text = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
@@ -160,15 +161,36 @@ object ModelOutputParser {
             val reply = obj["reply"] as? String ?: return ModelOutput.Invalid("reply must be text")
             return ModelOutput.Reply(reply)
         }
-        if (!setOf("tool", "args").containsAll(obj.keys) || "tool" !in obj) return ModelOutput.Invalid("unexpected keys")
-        val args = when (val a = obj["args"]) {
-            null -> emptyMap()
-            is Map<*, *> -> a.entries.associate { it.key as String to it.value }
-            else -> return ModelOutput.Invalid("args must be an object")
+        if (obj.keys == setOf("plan")) {
+            val steps = obj["plan"] as? List<*> ?: return ModelOutput.Invalid("plan must be a list")
+            if (steps.isEmpty() || steps.size > MAX_PLAN_STEPS) return ModelOutput.Invalid("plan has a bad length")
+            val calls = ArrayList<ToolCall>()
+            for (step in steps) {
+                @Suppress("UNCHECKED_CAST")
+                val item = step as? Map<String, Any?> ?: return ModelOutput.Invalid("plan step must be an object")
+                when (val v = callFrom(item)) {
+                    is Validated.Ok -> calls += v.call
+                    is Validated.Rejected -> return ModelOutput.Invalid(v.reason)
+                }
+            }
+            return ModelOutput.Plan(calls)
         }
-        return when (val v = ToolValidator.validate(obj["tool"] as? String, args)) {
+        return when (val v = callFrom(obj)) {
             is Validated.Ok -> ModelOutput.Call(v.call)
             is Validated.Rejected -> ModelOutput.Invalid(v.reason)
         }
+    }
+
+    private const val MAX_PLAN_STEPS = 5
+
+    private fun callFrom(obj: Map<String, Any?>): Validated {
+        val extra = obj.keys - setOf("tool", "args")
+        if (extra.isNotEmpty() || "tool" !in obj) return Validated.Rejected("unexpected keys")
+        val args = when (val a = obj["args"]) {
+            null -> emptyMap()
+            is Map<*, *> -> a.entries.associate { it.key as String to it.value }
+            else -> return Validated.Rejected("args must be an object")
+        }
+        return ToolValidator.validate(obj["tool"] as? String, args)
     }
 }

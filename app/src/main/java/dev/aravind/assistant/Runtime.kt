@@ -4,6 +4,8 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
+import android.os.BatteryManager
+import android.os.PowerManager
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -39,6 +41,22 @@ object AssistantRuntime {
     @Volatile
     var pendingApproval: CompletableDeferred<Boolean>? = null
 
+    /** Holds the end of a pause. Long.MAX_VALUE means paused until you resume. */
+    val pausedUntil = MutableStateFlow(0L)
+
+    fun pause(context: Context, minutes: Long?) {
+        pausedUntil.value = if (minutes == null) Long.MAX_VALUE else System.currentTimeMillis() + minutes * 60_000
+        Audit.log(context, "paused")
+    }
+
+    fun resume(context: Context) {
+        pausedUntil.value = 0L
+        Audit.log(context, "resumed")
+    }
+
+    /** True only when the assistant is on and not paused. */
+    fun isActive(): Boolean = armed.value && System.currentTimeMillis() >= pausedUntil.value
+
     fun say(line: String) {
         transcript.value = (transcript.value + line).takeLast(40)
     }
@@ -51,8 +69,9 @@ object AssistantRuntime {
     fun arm(context: Context) {
         val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
         authority = ConfirmationAuthority(key, System::currentTimeMillis)
+        pausedUntil.value = 0L
         armed.value = true
-        status.value = "Ready"
+        status.value = "Starting"
         Audit.log(context, "assistant_on")
         context.startForegroundService(Intent(context, AssistantService::class.java))
     }
@@ -76,6 +95,41 @@ object Gates {
     fun enabled(context: Context, category: Category) = prefs(context).getBoolean(category.name, false)
     fun set(context: Context, category: Category, value: Boolean) =
         prefs(context).edit().putBoolean(category.name, value).apply()
+
+    fun markUsed(context: Context, category: Category) =
+        prefs(context).edit().putLong("used_${category.name}", System.currentTimeMillis()).apply()
+
+    fun lastUsed(context: Context, category: Category): Long = prefs(context).getLong("used_${category.name}", 0L)
+}
+
+/** Feature switches. Wake word and AI calling stay off until you turn them on. */
+object Features {
+    private fun prefs(context: Context) = context.getSharedPreferences("features", Context.MODE_PRIVATE)
+    fun wakeWord(context: Context) = prefs(context).getBoolean("wake", false)
+    fun setWakeWord(context: Context, value: Boolean) = prefs(context).edit().putBoolean("wake", value).apply()
+    fun aiCalls(context: Context) = prefs(context).getBoolean("calls", false)
+    fun setAiCalls(context: Context, value: Boolean) = prefs(context).edit().putBoolean("calls", value).apply()
+    fun autoPause(context: Context) = prefs(context).getBoolean("auto_pause", true)
+    fun setAutoPause(context: Context, value: Boolean) = prefs(context).edit().putBoolean("auto_pause", value).apply()
+}
+
+/** Stops wake-word listening when the battery is low or the phone is too hot. */
+object PowerGuard {
+    private const val LOW_BATTERY_PERCENT = 15
+    private var checkedAt = 0L
+    private var result = false
+
+    fun shouldPause(context: Context): Boolean {
+        if (!Features.autoPause(context)) return false
+        val now = System.currentTimeMillis()
+        if (now - checkedAt < 30_000) return result
+        checkedAt = now
+        val battery = context.getSystemService(BatteryManager::class.java)
+        val low = battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) in 0 until LOW_BATTERY_PERCENT && !battery.isCharging
+        val hot = context.getSystemService(PowerManager::class.java).currentThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE
+        result = low || hot
+        return result
+    }
 }
 
 /** Keys are held in Android Keystore, so app files alone can't be decrypted elsewhere. */
@@ -169,7 +223,10 @@ object DataWipe {
         context.noBackupFilesDir.deleteRecursively()
         context.cacheDir.deleteRecursively()
         context.getSharedPreferences("gates", Context.MODE_PRIVATE).edit().clear().apply()
-        context.getSharedPreferences("model", Context.MODE_PRIVATE).edit().clear().apply()
+        listOf("model", "features", "calls").forEach {
+            context.getSharedPreferences(it, Context.MODE_PRIVATE).edit().clear().apply()
+        }
+        GemmaEngine.clearHistory()
         Keys.destroy()
         AssistantRuntime.transcript.value = emptyList()
     }
