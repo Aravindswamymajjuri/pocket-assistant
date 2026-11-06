@@ -37,6 +37,13 @@ Laptop limits:
 - Screen tapping only works in apps that expose Windows UI Automation
 - Alarms and timers only ring while the assistant is on
 
+## Download
+
+Direct files are on the Releases page: https://github.com/Aravindswamymajjuri/pocket-assistant/releases/tag/latest
+
+- `PocketAssistant-Android.apk` for Android 12 or later
+- `PocketAssistant-Windows-Setup.exe` for 64-bit Windows
+
 ## Build
 
 Every push to `main` runs the security tests and builds `app-release.apk`. Download it from the workflow run's artifacts.

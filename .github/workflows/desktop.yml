@@ -40,7 +40,9 @@ jobs:
   windows:
     needs: models
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
+    permissions:
+      contents: write
     env:
       DESKTOP_ONLY: "1"
     steps:
@@ -92,6 +94,25 @@ jobs:
           $p = Start-Process -FilePath dist\PocketAssistant\PocketAssistant.exe -ArgumentList "--self-test",$report -PassThru -Wait
           Get-Content $report
           if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
+      - name: Build one-file installer
+        shell: pwsh
+        run: |
+          choco install wixtoolset -y --no-progress
+          $wix = (Get-ChildItem "C:\Program Files (x86)\WiX Toolset*\bin" | Select-Object -First 1).FullName
+          $env:PATH = "$wix;$env:PATH"
+          jpackage --type exe --app-image dist\PocketAssistant --name PocketAssistant --app-version 0.3.1 `
+            --vendor "Pocket Assistant" --win-per-user-install --win-menu --win-shortcut --dest installer
+          Get-ChildItem installer | Format-Table Name, Length
+          Move-Item (Get-ChildItem installer\*.exe | Select-Object -First 1).FullName PocketAssistant-Windows-Setup.exe
+      - name: Publish direct installer download
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create latest --title "Latest build" --notes "Direct downloads of the newest Android and Windows builds." --latest || true
+          gh release upload latest PocketAssistant-Windows-Setup.exe --clobber
       - uses: actions/upload-artifact@v4
         with:
           name: pocket-assistant-windows
