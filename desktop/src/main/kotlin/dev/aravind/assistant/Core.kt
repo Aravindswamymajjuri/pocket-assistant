@@ -183,7 +183,8 @@ object Ps {
     private val exe = File(System.getenv("SystemRoot") ?: "C:\\Windows", "System32\\WindowsPowerShell\\v1.0\\powershell.exe").path
 
     fun run(script: String, env: Map<String, String> = emptyMap(), timeoutSeconds: Long = 40): String {
-        val prelude = "[Console]::OutputEncoding=[Text.Encoding]::UTF8\n\$ErrorActionPreference='Stop'\n"
+        // The app has no console window, so setting the console encoding can fail. That must not stop the script.
+        val prelude = "try { [Console]::OutputEncoding=[Text.Encoding]::UTF8 } catch {}\n\$ErrorActionPreference='Stop'\n"
         val encoded = Base64.getEncoder().encodeToString((prelude + script).toByteArray(StandardCharsets.UTF_16LE))
         val process = ProcessBuilder(exe, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encoded)
             .redirectErrorStream(true)

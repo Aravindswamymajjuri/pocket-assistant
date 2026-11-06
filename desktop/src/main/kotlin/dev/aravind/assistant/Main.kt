@@ -407,8 +407,30 @@ private fun selfTest(report: File): Int {
         "native library loaded, and it rejected the missing file"
     }
     step("powershell tools") {
-        check(Ps.run("Write-Output 'OK'").endsWith("OK"))
+        val output = Ps.run("Write-Output 'OK'")
+        check(output.endsWith("OK")) { output.take(300) }
         "fixed scripts run"
+    }
+    step("windows runtime calls") {
+        val output = Ps.run(
+            Ps.WINRT_AWAIT + """
+[Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null
+[Windows.Security.Credentials.UI.UserConsentVerifier,Windows.Security.Credentials.UI,ContentType=WindowsRuntime] | Out-Null
+${'$'}a = Await ([Windows.Security.Credentials.UI.UserConsentVerifier]::CheckAvailabilityAsync()) ([Windows.Security.Credentials.UI.UserConsentVerifierAvailability])
+"Hello:${'$'}a"
+""",
+        )
+        check(output.contains("Hello:")) { output.take(300) }
+        output.substringAfterLast("Hello:").let { "Windows Hello status: $it" }
+    }
+    step("ui automation loads") {
+        val output = Ps.run("Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes; Write-Output 'OK'")
+        check(output.endsWith("OK")) { output.take(300) }
+        "screen control library loads"
+    }
+    step("start menu apps") {
+        val output = Ps.run("(Get-Command Get-StartApps -ErrorAction SilentlyContinue | Measure-Object).Count")
+        "Get-StartApps commands found: ${output.take(10)}"
     }
     report.writeText(lines.joinToString("\n"))
     return if (failed == 0) 0 else 1
