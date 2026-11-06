@@ -115,6 +115,11 @@ class Agent(
             is Decision.Biometric -> if (!biometricApprove(call, decision.readback, foreground)) return false
         }
         if (call.tool.hasRecipient) AssistantRuntime.rateLimiter.record()
+        // The wake screen must not cover the app or screen this action is about to use.
+        if (call.tool !in KEEPS_WAKE_SCREEN && WakeUi.visible) {
+            WakeUi.close()
+            delay(450)
+        }
         val result = try {
             executor.execute(call)
         } catch (e: CancellationException) {
@@ -128,6 +133,12 @@ class Agent(
         Audit.log(context, "done:${call.tool.id}")
         speak(result)
         return true
+    }
+
+    private companion object {
+        val KEEPS_WAKE_SCREEN = setOf(
+            Tool.FLASHLIGHT, Tool.VOLUME, Tool.BRIGHTNESS, Tool.DO_NOT_DISTURB, Tool.SET_ALARM, Tool.SET_TIMER, Tool.READ_NOTIFICATIONS,
+        )
     }
 
     /** Voice approval needs a fresh random code in your voice. If it fails, your fingerprint is required. */

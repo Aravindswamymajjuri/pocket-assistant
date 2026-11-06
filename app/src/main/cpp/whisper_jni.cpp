@@ -17,11 +17,13 @@ Java_dev_aravind_assistant_WhisperCpp_nativeInit(JNIEnv *env, jobject, jstring m
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_dev_aravind_assistant_WhisperCpp_nativeTranscribe(
-        JNIEnv *env, jobject, jlong handle, jfloatArray samples, jstring language, jint threads) {
+        JNIEnv *env, jobject, jlong handle, jfloatArray samples, jstring language, jstring prompt,
+        jint threads) {
     auto *context = reinterpret_cast<whisper_context *>(handle);
     if (context == nullptr) return env->NewStringUTF("");
 
     const char *lang = env->GetStringUTFChars(language, nullptr);
+    const char *hint = env->GetStringUTFChars(prompt, nullptr);
     whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     params.print_realtime = false;
     params.print_progress = false;
@@ -34,12 +36,15 @@ Java_dev_aravind_assistant_WhisperCpp_nativeTranscribe(
     params.language = lang;
     params.detect_language = false;
     params.n_threads = threads;
+    params.initial_prompt = hint;
+    params.greedy.best_of = 3;
 
     jfloat *audio = env->GetFloatArrayElements(samples, nullptr);
     const jsize count = env->GetArrayLength(samples);
     const int status = whisper_full(context, params, audio, count);
     env->ReleaseFloatArrayElements(samples, audio, JNI_ABORT);
     env->ReleaseStringUTFChars(language, lang);
+    env->ReleaseStringUTFChars(prompt, hint);
     if (status != 0) return env->NewStringUTF("");
 
     std::string text;

@@ -22,6 +22,7 @@ import dev.aravind.assistant.policy.BpeTokenizer
 import dev.aravind.assistant.policy.ModelPath
 import dev.aravind.assistant.policy.Script
 import dev.aravind.assistant.policy.ScriptDetect
+import dev.aravind.assistant.policy.SpeechPrompt
 import dev.aravind.assistant.policy.Tool
 import dev.aravind.assistant.policy.VoiceMatch
 import dev.aravind.assistant.policy.WakeName
@@ -45,14 +46,14 @@ object WhisperCpp {
     }
 
     private external fun nativeInit(model: String): Long
-    private external fun nativeTranscribe(handle: Long, samples: FloatArray, language: String, threads: Int): String
+    private external fun nativeTranscribe(handle: Long, samples: FloatArray, language: String, prompt: String, threads: Int): String
     private external fun nativeFree(handle: Long)
 
     @Synchronized
     fun transcribe(samples: FloatArray, language: String): String {
         if (handle == 0L) handle = nativeInit(AppPaths.models.resolve("whisper/ggml-base-q5_1.bin").absolutePath)
         check(handle != 0L) { "The speech model failed to load" }
-        return nativeTranscribe(handle, samples, language, java.lang.Runtime.getRuntime().availableProcessors().coerceIn(2, 8)).trim()
+        return nativeTranscribe(handle, samples, language, SpeechPrompt.text(Features.wakeName()), java.lang.Runtime.getRuntime().availableProcessors().coerceIn(2, 8)).trim()
     }
 
     @Synchronized

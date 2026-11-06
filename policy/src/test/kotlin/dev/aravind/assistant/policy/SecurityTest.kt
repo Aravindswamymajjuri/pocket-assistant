@@ -220,8 +220,7 @@ class SecurityTest {
         assertEquals(false, CommandRouter.route("do not disturb off")?.bool("on"))
         assertEquals(40L, CommandRouter.route("set brightness to 40 percent")?.long("percent"))
         assertNull(CommandRouter.route("set brightness to 400 percent"))
-        assertTrue(PolicyEngine.evaluate(call("wifi", "on" to false), ctx) is Decision.Biometric)
-        assertTrue(PolicyEngine.evaluate(call("wifi", "on" to false), ctx.copy(voiceVerified = true)) is Decision.Allow)
+        assertTrue(PolicyEngine.evaluate(call("wifi", "on" to false), ctx) is Decision.Allow)
         assertTrue(PolicyEngine.evaluate(call("brightness", "percent" to 40L), ctx) is Decision.Allow)
     }
 
@@ -238,7 +237,7 @@ class SecurityTest {
         val tokenizer = BpeTokenizer(mapOf("\u2581HE" to -2f, "Y" to -3f, "\u2581HEY" to -9f, "\u2581NO" to -2f, "VA" to -2f))
         assertEquals(listOf("\u2581HE", "Y", "\u2581NO", "VA"), tokenizer.encode("hey nova"))
         assertNull(tokenizer.encode("hey 1"))
-        assertEquals("\u2581HE Y \u2581NO VA :2.0 #0.3 @HEY_NOVA", WakeName.keywordLine(tokenizer, "Nova"))
+        assertEquals("\u2581HE Y \u2581NO VA :3.0 #0.15 @HEY_NOVA", WakeName.keywordLine(tokenizer, "Nova"))
     }
 
     /** Compares our Kotlin tokenizer against the real one, on the real model files. */
@@ -282,5 +281,46 @@ class SecurityTest {
         assertNotNull(ModelPath.windowsProblem("gemma.litertlm"))
         assertNotNull(ModelPath.windowsProblem("C:\\Models\\..\\gemma.litertlm"))
         assertNotNull(ModelPath.windowsProblem("C:\\Models\\gemma.bin"))
+    }
+
+    @Test fun phoneTestCommandsNowRoute() {
+        assertEquals("daddy", CommandRouter.route("call to daddy")?.text("to"))
+        assertEquals("Daddy", CommandRouter.route("Call Daddy.")?.text("to"))
+        assertEquals("Amma", CommandRouter.route("make a call to my Amma")?.text("to"))
+        assertEquals(Tool.MOBILE_DATA, CommandRouter.route("turrent off my data network")?.tool)
+        assertEquals(false, CommandRouter.route("turn off my data network")?.bool("on"))
+        assertEquals(true, CommandRouter.route("turnon mobile data")?.bool("on"))
+        assertEquals(Tool.FLASHLIGHT, CommandRouter.route("turn on flash")?.tool)
+        assertEquals(Tool.FLASHLIGHT, CommandRouter.route("Turn on the flash.")?.tool)
+        assertEquals(Tool.WIFI, CommandRouter.route("Turn on Wi-Fi.")?.tool)
+        assertEquals(Tool.BLUETOOTH, CommandRouter.route("turn off blue tooth")?.tool)
+    }
+
+    @Test fun callsRunDirectlyButStayGuarded() {
+        val daddy = call("place_call", "to" to "Daddy")
+        assertTrue(PolicyEngine.evaluate(daddy, ctx) is Decision.Allow)
+        assertTrue(PolicyEngine.evaluate(daddy, ctx.copy(outboundAllowed = false)) is Decision.Deny)
+        assertTrue(PolicyEngine.evaluate(daddy, ctx.copy(armed = false)) is Decision.Deny)
+    }
+
+    @Test fun contactMatcherFindsNames() {
+        val contacts = listOf("Daddy", "Amma Home", "Ravi Kumar", "Ravi Teja", "Suresh Anna")
+        assertEquals("Daddy", ContactMatcher.best("daddy", contacts))
+        assertEquals("Daddy", ContactMatcher.best("to daddy", contacts))
+        assertEquals("Daddy", ContactMatcher.best("dady", contacts))
+        assertEquals("Daddy", ContactMatcher.best("nanna", contacts))
+        assertEquals("Amma Home", ContactMatcher.best("amma", contacts))
+        assertEquals("Ravi Teja", ContactMatcher.best("ravi teja", contacts))
+        assertNull(ContactMatcher.best("ravi", contacts))
+        assertNull(ContactMatcher.best("zzzz", contacts))
+    }
+
+    @Test fun wakeNameIsFoundInSpeech() {
+        assertEquals("", WakeName.heardIn("Hey Nova.", "Nova"))
+        assertEquals("call daddy", WakeName.heardIn("Hey Nova, call Daddy.", "Nova"))
+        assertEquals("", WakeName.heardIn("hey novah", "Nova"))
+        assertEquals("", WakeName.heardIn("Nova", "Nova"))
+        assertNull(WakeName.heardIn("what is the time", "Nova"))
+        assertNull(WakeName.heardIn("the supernova exploded", "Nova"))
     }
 }

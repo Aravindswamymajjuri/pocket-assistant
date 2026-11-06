@@ -1,8 +1,12 @@
 package dev.aravind.assistant
 
 import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -18,16 +22,26 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricManager.Authenticators
 import androidx.biometric.BiometricPrompt
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -37,9 +51,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -49,11 +66,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import dev.aravind.assistant.policy.Category
 import dev.aravind.assistant.policy.WakeName
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -132,6 +154,115 @@ class MainActivity : FragmentActivity() {
     }
 }
 
+private fun startIfPossible(activity: FragmentActivity) {
+    val micGranted = activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    if (micGranted && !AssistantRuntime.armed.value) AssistantRuntime.arm(activity)
+}
+
+/** Opens the wake screen over other apps, and over the lock screen when Android allows it. */
+object WakeUi {
+    private const val NOTIFICATION = 2
+    private const val CHANNEL = "wake"
+    val closeRequests = MutableStateFlow(0)
+
+    @Volatile
+    var visible = false
+
+    fun open(context: Context) {
+        if (visible) return
+        val intent = Intent(context, WakeActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        runCatching { context.startActivity(intent) }
+        // Without the Accessibility Service, Android only allows this through a notification.
+        if (AutomationService.instance == null) {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(NotificationChannel(CHANNEL, "Wake screen", NotificationManager.IMPORTANCE_HIGH))
+            val pending = PendingIntent.getActivity(context, 7, intent, PendingIntent.FLAG_IMMUTABLE)
+            manager.notify(
+                NOTIFICATION,
+                Notification.Builder(context, CHANNEL)
+                    .setSmallIcon(R.drawable.ic_assistant)
+                    .setContentTitle("Listening")
+                    .setFullScreenIntent(pending, true)
+                    .setAutoCancel(true)
+                    .build(),
+            )
+        }
+    }
+
+    fun clearNotification(context: Context) {
+        context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION)
+    }
+
+    fun close() {
+        closeRequests.value++
+    }
+}
+
+/** The screen shown when the wake word is heard. */
+class WakeActivity : FragmentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+        WakeUi.visible = true
+        WakeUi.clearNotification(this)
+        setContent { AppTheme { WakeScreen(onClose = ::finish) } }
+    }
+
+    override fun onDestroy() {
+        WakeUi.visible = false
+        super.onDestroy()
+    }
+}
+
+@Composable
+private fun WakeScreen(onClose: () -> Unit) {
+    val status by AssistantRuntime.status.collectAsState()
+    val transcript by AssistantRuntime.transcript.collectAsState()
+    val pulse = rememberInfiniteTransition(label = "pulse").animateFloat(
+        initialValue = 0.82f,
+        targetValue = 1.12f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "size",
+    )
+    val startCount = remember { WakeUi.closeRequests.value }
+    LaunchedEffect(Unit) {
+        WakeUi.closeRequests.first { it != startCount }
+        onClose()
+    }
+    LaunchedEffect(status) {
+        if (status == "Ready" || status == "Off") {
+            delay(4500)
+            onClose()
+        }
+    }
+    val heard = transcript.lastOrNull { it.startsWith("You: ") }?.removePrefix("You: ").orEmpty()
+    val reply = transcript.lastOrNull { it.startsWith("Assistant: ") }?.removePrefix("Assistant: ").orEmpty()
+    Column(
+        Modifier.fillMaxSize().clickable(onClick = onClose).padding(28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically),
+    ) {
+        Box(
+            Modifier.size(150.dp)
+                .graphicsLayer {
+                    scaleX = pulse.value
+                    scaleY = pulse.value
+                }
+                .background(MaterialTheme.colorScheme.primary, CircleShape),
+        )
+        Text(if (status == "Ready") "Done" else status, style = MaterialTheme.typography.headlineSmall)
+        if (heard.isNotEmpty()) Text(heard, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+        if (reply.isNotEmpty()) Text(reply, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
+        OutlinedButton(
+            onClick = {
+                AssistantService.instance?.let { it.startService(Intent(it, AssistantService::class.java).setAction(AssistantService.ACTION_LISTEN)) }
+            },
+        ) { Text("Talk again") }
+    }
+}
+
 @Composable
 private fun AppTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = darkColorScheme()) {
@@ -169,11 +300,22 @@ private fun HomeScreen(activity: FragmentActivity) {
     val status by AssistantRuntime.status.collectAsState()
     val transcript by AssistantRuntime.transcript.collectAsState()
     var refresh by remember { mutableIntStateOf(0) }
+    var tab by remember { mutableIntStateOf(0) }
     var message by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val refreshKey = refresh
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
+    // Asks once for what the assistant needs, then starts it so the wake word works right away.
+    val startupPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        refresh++
+        startIfPossible(activity)
+    }
+    LaunchedEffect(Unit) {
+        val missing = runtimePermissions.map { it.second }
+            .filter { activity.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) startIfPossible(activity) else startupPermissions.launch(missing.toTypedArray())
+    }
     var modelPath by remember { mutableStateOf(ModelStore.path(activity).orEmpty()) }
     var wakeName by remember { mutableStateOf(Features.wakeName(activity)) }
     var allowedNumbers by remember { mutableStateOf(CallRules.allowedNumbers(activity)) }
@@ -214,7 +356,17 @@ private fun HomeScreen(activity: FragmentActivity) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Pocket Assistant", style = MaterialTheme.typography.headlineMedium)
+        TabRow(selectedTabIndex = tab) {
+            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Assistant") })
+            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Settings") })
+        }
+        if (message.isNotEmpty()) Text(message, style = MaterialTheme.typography.bodySmall)
 
+        if (tab == 0) {
+        Text(
+            "Say \"${WakeName.phrase(Features.wakeName(activity)).lowercase()}\" or tap Talk",
+            style = MaterialTheme.typography.bodyLarge,
+        )
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 ToggleRow("Assistant", status, armed) { on ->
@@ -225,9 +377,7 @@ private fun HomeScreen(activity: FragmentActivity) {
                         if (!micGranted) {
                             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         } else {
-                            activity.authenticate("Turn on assistant", "Confirm it's you") { ok ->
-                                if (ok) AssistantRuntime.arm(activity)
-                            }
+                            AssistantRuntime.arm(activity)
                         }
                     }
                 }
@@ -260,8 +410,7 @@ private fun HomeScreen(activity: FragmentActivity) {
                 }
             }
         }
-        if (message.isNotEmpty()) Text(message, style = MaterialTheme.typography.bodySmall)
-
+        } else {
         Section("Control Center")
         Text("Tool switches", style = MaterialTheme.typography.titleSmall)
         Category.entries.forEach { category ->
@@ -269,15 +418,8 @@ private fun HomeScreen(activity: FragmentActivity) {
             val used = remember(refreshKey) { Gates.lastUsed(activity, category) }
             val usedText = if (used > 0) "Last used ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(used))}" else "Not used yet"
             ToggleRow(categoryNames.getValue(category), usedText, enabled) { on ->
-                if (!on) {
-                    Gates.set(activity, category, false)
-                    refresh++
-                } else {
-                    activity.authenticate("Turn on tool", categoryNames.getValue(category)) { ok ->
-                        if (ok) Gates.set(activity, category, true)
-                        refresh++
-                    }
-                }
+                Gates.set(activity, category, on)
+                refresh++
             }
         }
 
@@ -355,13 +497,11 @@ private fun HomeScreen(activity: FragmentActivity) {
                 if (problem != null) {
                     message = problem
                 } else {
-                    activity.authenticate("Change assistant name", "Confirm it's you") { ok ->
-                        if (ok) {
-                            Features.setWakeName(activity, wakeName)
-                            AssistantService.instance?.onWakeNameChanged()
-                            message = "Name saved. Say: ${WakeName.phrase(wakeName).lowercase()}"
-                        }
-                    }
+                    Features.setWakeName(activity, wakeName)
+                    Features.setWakeWord(activity, true)
+                    AssistantService.instance?.onWakeNameChanged()
+                    refresh++
+                    message = "Name saved. Say: ${WakeName.phrase(wakeName).lowercase()}"
                 }
             },
             Modifier.fillMaxWidth(),
@@ -383,15 +523,8 @@ private fun HomeScreen(activity: FragmentActivity) {
             }
         }
         ToggleRow("Wake word", "The mic stays open while this is on", wakeOn) { on ->
-            if (!on) {
-                Features.setWakeWord(activity, false)
-                refresh++
-            } else {
-                activity.authenticate("Turn on wake word", "The microphone will stay open") { ok ->
-                    if (ok) Features.setWakeWord(activity, true)
-                    refresh++
-                }
-            }
+            Features.setWakeWord(activity, on)
+            refresh++
         }
         val autoPause = remember(refreshKey) { Features.autoPause(activity) }
         ToggleRow("Auto-pause wake word", "Below 15% battery, or when the phone is too hot", autoPause) { on ->
@@ -406,9 +539,7 @@ private fun HomeScreen(activity: FragmentActivity) {
             } else if (!armed) {
                 message = "Turn on the assistant first"
             } else {
-                activity.authenticate("Set up Voice ID", "You will repeat five phrases") { ok ->
-                    if (ok) AssistantService.instance?.enrollVoice()
-                }
+                AssistantService.instance?.enrollVoice()
             }
         }
 
@@ -416,15 +547,8 @@ private fun HomeScreen(activity: FragmentActivity) {
         Text("AI call answering (experimental)", style = MaterialTheme.typography.titleSmall)
         val callsOn = remember(refreshKey) { Features.aiCalls(activity) }
         ToggleRow("Answer allowed callers", "Uses speakerphone and may not work on this phone", callsOn) { on ->
-            if (!on) {
-                Features.setAiCalls(activity, false)
-                refresh++
-            } else {
-                activity.authenticate("Turn on AI calls", "Allowed callers will reach the AI") { ok ->
-                    if (ok) Features.setAiCalls(activity, true)
-                    refresh++
-                }
-            }
+            Features.setAiCalls(activity, on)
+            refresh++
         }
         OutlinedTextField(
             value = allowedNumbers,
@@ -434,12 +558,8 @@ private fun HomeScreen(activity: FragmentActivity) {
         )
         OutlinedButton(
             onClick = {
-                activity.authenticate("Change allowed callers", "Confirm it's you") { ok ->
-                    if (ok) {
-                        CallRules.setAllowedNumbers(activity, allowedNumbers)
-                        message = "Allowed callers saved"
-                    }
-                }
+                CallRules.setAllowedNumbers(activity, allowedNumbers)
+                message = "Allowed callers saved"
             },
             Modifier.fillMaxWidth(),
         ) { Text("Save allowed numbers") }
@@ -544,6 +664,7 @@ private fun HomeScreen(activity: FragmentActivity) {
             },
             Modifier.fillMaxWidth(),
         ) { Text("Delete all assistant data") }
+        }
     }
 }
 

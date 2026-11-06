@@ -9,6 +9,8 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.ToneGenerator
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.KeywordSpotter
 import com.k2fsa.sherpa.onnx.KeywordSpotterConfig
@@ -25,6 +27,7 @@ import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
 import dev.aravind.assistant.policy.BpeTokenizer
+import dev.aravind.assistant.policy.SpeechPrompt
 import dev.aravind.assistant.policy.VoiceMatch
 import dev.aravind.assistant.policy.WakeName
 import kotlinx.coroutines.CompletableDeferred
@@ -43,10 +46,12 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val SAMPLE_RATE = 16_000
+private const val MIN_WAKE_SAMPLES = SAMPLE_RATE * 2 / 5
+private const val MAX_WAKE_SAMPLES = SAMPLE_RATE * 4
 
 /** Voice models ship in the APK and are unpacked to private storage on first use. */
 object VoiceAssets {
-    private const val VERSION = "2"
+    private const val VERSION = "3"
 
     fun dir(context: Context) = File(context.noBackupFilesDir, "voice")
 
@@ -106,8 +111,6 @@ class VoiceEngines(context: Context) {
         ),
     )
 
-    private val whisperModel = "$root/whisper/ggml-base-q5_1.bin"
-
     /** Builds the wake phrase from the name saved in Control Center. */
     fun wakeKeywords(context: Context): String {
         val vocab = File(root, "kws/bpe.vocab")
@@ -136,7 +139,8 @@ class VoiceEngines(context: Context) {
     private val english by lazy { piper("piper") }
     private val hindi by lazy { piper("piper-hi") }
 
-    fun transcribe(samples: FloatArray, language: String): String = WhisperCpp.transcribe(whisperModel, samples, language)
+    fun transcribe(samples: FloatArray, language: String, prompt: String): String =
+        WhisperCpp.transcribe(root, Audio.normalized(samples), language, prompt)
 
     fun embedding(samples: FloatArray): FloatArray? {
         val stream: OnlineStream = extractor.createStream()
@@ -152,29 +156,54 @@ class VoiceEngines(context: Context) {
     fun synthesize(text: String, useHindi: Boolean) = (if (useHindi) hindi else english).generate(text, sid = 0, speed = 1.0f)
 }
 
-/** whisper.cpp through a small JNI layer. Its model loads once and is freed when the assistant stops. */
+/** Quiet phone microphones are a common cause of bad recognition, so levels are corrected here. */
+object Audio {
+    /** Raises a whole phrase to a consistent volume. */
+    fun normalized(samples: FloatArray): FloatArray {
+        val peak = samples.maxOfOrNull { kotlin.math.abs(it) } ?: return samples
+        if (peak < 0.002f) return samples
+        val gain = (0.9f / peak).coerceAtMost(30f)
+        return FloatArray(samples.size) { samples[it] * gain }
+    }
+
+    /** Raises a short frame for the wake word, keeping loud sounds from clipping. */
+    fun boosted(frame: FloatArray, gain: Float): FloatArray =
+        FloatArray(frame.size) { (frame[it] * gain).coerceIn(-1f, 1f) }
+
+    fun rms(frame: FloatArray): Float =
+        if (frame.isEmpty()) 0f else kotlin.math.sqrt(frame.fold(0f) { sum, s -> sum + s * s } / frame.size)
+}
+
+/** whisper.cpp through a small JNI layer. English uses a more accurate English-only model. */
 object WhisperCpp {
     private var handle = 0L
+    private var loaded = ""
 
     init {
         System.loadLibrary("whisperjni")
     }
 
     private external fun nativeInit(model: String): Long
-    private external fun nativeTranscribe(handle: Long, samples: FloatArray, language: String, threads: Int): String
+    private external fun nativeTranscribe(handle: Long, samples: FloatArray, language: String, prompt: String, threads: Int): String
     private external fun nativeFree(handle: Long)
 
     @Synchronized
-    fun transcribe(model: String, samples: FloatArray, language: String): String {
-        if (handle == 0L) handle = nativeInit(model)
+    fun transcribe(root: String, samples: FloatArray, language: String, prompt: String): String {
+        val model = "$root/whisper/" + if (language == "en") "ggml-base.en-q5_1.bin" else "ggml-base-q5_1.bin"
+        if (loaded != model) {
+            release()
+            handle = nativeInit(model)
+            loaded = model
+        }
         check(handle != 0L) { "The speech model failed to load" }
-        return nativeTranscribe(handle, samples, language, 4).trim()
+        return nativeTranscribe(handle, samples, language, prompt, 4).trim()
     }
 
     @Synchronized
     fun release() {
         if (handle != 0L) nativeFree(handle)
         handle = 0L
+        loaded = ""
     }
 }
 
@@ -230,6 +259,9 @@ class VoiceLoop(
     @Volatile
     private var wakeChanged = false
 
+    @Volatile
+    private var checking = false
+
     /** Applies a new wake name without restarting the assistant. */
     fun reloadWakeName() {
         wakeChanged = true
@@ -248,9 +280,11 @@ class VoiceLoop(
         return result
     }
 
+    private fun prompt() = SpeechPrompt.text(Features.wakeName(context))
+
     /** Language is a Whisper code. Leave it null to use the language chosen in Control Center. */
     fun understand(samples: FloatArray, language: String? = null): Heard {
-        val text = engines.transcribe(samples, language ?: Features.language(context))
+        val text = engines.transcribe(samples, language ?: Features.language(context), prompt())
         val verified = VoiceId.matches(context, engines.embedding(samples))
         return Heard(text, verified, samples)
     }
@@ -267,6 +301,9 @@ class VoiceLoop(
             created.release()
             return null
         }
+        val session = created.audioSessionId
+        if (AutomaticGainControl.isAvailable()) runCatching { AutomaticGainControl.create(session)?.enabled = true }
+        if (NoiseSuppressor.isAvailable()) runCatching { NoiseSuppressor.create(session)?.enabled = true }
         created.startRecording()
         record = created
         return created
@@ -289,6 +326,8 @@ class VoiceLoop(
         val floats = FloatArray(1600)
         var wakeStream: OnlineStream? = null
         var collector: Collector? = null
+        var watcher: Collector? = null
+        var wakeGain = 3f
         try {
             while (currentCoroutineContext().isActive) {
                 val wantCapture = captureRequest != null
@@ -298,6 +337,8 @@ class VoiceLoop(
                     close()
                     wakeStream?.release()
                     wakeStream = null
+                    watcher?.close()
+                    watcher = null
                     delay(200)
                     continue
                 }
@@ -334,22 +375,68 @@ class VoiceLoop(
                         wakeStream = null
                     }
                     val stream = wakeStream ?: engines.spotter.createStream(engines.wakeKeywords(context)).also { wakeStream = it }
-                    stream.acceptWaveform(frame, SAMPLE_RATE)
+                    // Keeps speech near a steady level, however far away you are.
+                    val level = Audio.rms(frame)
+                    if (level > 0.002f) wakeGain = (wakeGain * 0.9f + (0.08f / level).coerceIn(1f, 12f) * 0.1f)
+                    stream.acceptWaveform(Audio.boosted(frame, wakeGain), SAMPLE_RATE)
+                    var spotted = false
                     while (engines.spotter.isReady(stream)) {
                         engines.spotter.decode(stream)
                         if (engines.spotter.getResult(stream).keyword.isNotBlank()) {
                             engines.spotter.reset(stream)
-                            beep()
-                            listenRequested.set(true)
+                            spotted = true
                             break
                         }
                     }
+                    if (spotted) {
+                        wakeUp()
+                        listenRequested.set(true)
+                        watcher?.restart()
+                        continue
+                    }
+                    // A second detector: Whisper checks short phrases, which handles names and accents better.
+                    val check = watcher ?: Collector(engines.newVad()).also { watcher = it }
+                    val phrase = check.feed(frame)
+                    if (phrase != null || check.expired()) check.restart()
+                    if (phrase != null && phrase.size in MIN_WAKE_SAMPLES..MAX_WAKE_SAMPLES && !checking) checkForName(phrase)
                 }
             }
         } finally {
             collector?.close()
+            watcher?.close()
             wakeStream?.release()
             close()
+        }
+    }
+
+    private fun wakeUp() {
+        beep()
+        WakeUi.open(context)
+    }
+
+    private fun checkForName(samples: FloatArray) {
+        checking = true
+        scope.launch(Dispatchers.Default) {
+            try {
+                val text = engines.transcribe(samples, "en", prompt())
+                val rest = WakeName.heardIn(text, Features.wakeName(context)) ?: return@launch
+                wakeUp()
+                if (rest.contains(' ')) {
+                    busy = true
+                    try {
+                        onCommand(Heard(rest, VoiceId.matches(context, engines.embedding(samples)), samples))
+                    } finally {
+                        busy = false
+                        if (AssistantRuntime.armed.value) AssistantRuntime.status.value = "Ready"
+                    }
+                } else {
+                    listenRequested.set(true)
+                }
+            } catch (e: Exception) {
+                Audit.log(context, "wake_check_failed:${e.javaClass.simpleName}")
+            } finally {
+                checking = false
+            }
         }
     }
 
@@ -378,7 +465,10 @@ class VoiceLoop(
         scope.launch(Dispatchers.Default) {
             try {
                 val heard = understand(samples)
-                if (heard.text.isNotBlank()) onCommand(heard)
+                // "Hey Nova, call Daddy" and "call Daddy" should do the same thing.
+                val rest = WakeName.heardIn(heard.text, Features.wakeName(context))
+                val command = if (rest.isNullOrBlank()) heard else heard.copy(text = rest)
+                if (rest != "" && command.text.isNotBlank()) onCommand(command)
             } finally {
                 busy = false
                 if (AssistantRuntime.armed.value) AssistantRuntime.status.value = "Ready"
@@ -388,7 +478,7 @@ class VoiceLoop(
 
     /** Collects one phrase, ending after a pause in speech. */
     private class Collector(private val vad: Vad) {
-        private val started = System.currentTimeMillis()
+        private var started = System.currentTimeMillis()
         private val pending = ArrayList<Float>()
         private val speech = ArrayList<FloatArray>()
 
@@ -420,6 +510,13 @@ class VoiceLoop(
                 offset += it.size
             }
             return out
+        }
+
+        fun restart() {
+            pending.clear()
+            speech.clear()
+            started = System.currentTimeMillis()
+            vad.reset()
         }
 
         fun close() = vad.release()

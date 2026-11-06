@@ -235,7 +235,9 @@ class AutomationService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            foregroundPackage = event.packageName?.toString()
+            val current = event.packageName?.toString()
+            // The wake screen sits on top for a moment, and it shouldn't count as the app in use.
+            if (!(current == packageName && WakeUi.visible)) foregroundPackage = current
         }
     }
 
@@ -302,6 +304,24 @@ class AutomationService : AccessibilityService() {
         return click(toggle)
     }
 
+    /** Finds the switch beside a label, for pages where the first switch is a different setting. */
+    fun flipSwitchNear(labels: List<String>, on: Boolean): Boolean {
+        val root = rootInActiveWindow ?: return false
+        if (root.packageName?.toString() !in SETTINGS_PACKAGES) return false
+        val label = search(root) { node ->
+            val text = node.text?.toString()?.lowercase().orEmpty()
+            labels.any { text.contains(it) }
+        } ?: return false
+        var parent = label.parent
+        repeat(4) {
+            val area = parent ?: return false
+            val toggle = search(area) { it.isCheckable && it.className?.toString().orEmpty().contains("Switch") }
+            if (toggle != null) return if (toggle.isChecked == on) true else click(toggle)
+            parent = area.parent
+        }
+        return false
+    }
+
     /** Works only inside WhatsApp, and only after the message was approved. */
     fun tapSendInWhatsApp(): Boolean {
         val root = rootInActiveWindow ?: return false
@@ -321,6 +341,7 @@ class AutomationService : AccessibilityService() {
 
         private val SETTINGS_PACKAGES = setOf(
             "com.android.settings", "com.oplus.wirelesssettings", "com.coloros.wirelesssettings", "com.android.settings.intelligence",
+            "com.android.systemui", "com.android.phone",
         )
     }
 }

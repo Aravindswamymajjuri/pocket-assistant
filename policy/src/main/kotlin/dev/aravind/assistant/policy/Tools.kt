@@ -35,9 +35,10 @@ enum class Tool(
     FLASHLIGHT("flashlight", Risk.L0_SAFE, Category.SYSTEM, mapOf("on" to BoolParam()), "Turn the flashlight on or off"),
     VOLUME("volume", Risk.L0_SAFE, Category.SYSTEM, mapOf("direction" to ChoiceParam(setOf("up", "down"))), "Change media volume"),
     BRIGHTNESS("brightness", Risk.L0_SAFE, Category.SYSTEM, mapOf("percent" to IntParam(0, 100)), "Set screen brightness"),
-    WIFI("wifi", Risk.L1_PERSONAL, Category.SYSTEM, mapOf("on" to BoolParam()), "Turn Wi-Fi on or off"),
-    BLUETOOTH("bluetooth", Risk.L1_PERSONAL, Category.SYSTEM, mapOf("on" to BoolParam()), "Turn Bluetooth on or off"),
-    DO_NOT_DISTURB("do_not_disturb", Risk.L1_PERSONAL, Category.SYSTEM, mapOf("on" to BoolParam()), "Turn Do Not Disturb on or off"),
+    WIFI("wifi", Risk.L0_SAFE, Category.SYSTEM, mapOf("on" to BoolParam()), "Turn Wi-Fi on or off"),
+    BLUETOOTH("bluetooth", Risk.L0_SAFE, Category.SYSTEM, mapOf("on" to BoolParam()), "Turn Bluetooth on or off"),
+    MOBILE_DATA("mobile_data", Risk.L0_SAFE, Category.SYSTEM, mapOf("on" to BoolParam()), "Turn mobile data on or off"),
+    DO_NOT_DISTURB("do_not_disturb", Risk.L0_SAFE, Category.SYSTEM, mapOf("on" to BoolParam()), "Turn Do Not Disturb on or off"),
     LOCK_PHONE("lock_phone", Risk.L0_SAFE, Category.SYSTEM, description = "Lock the phone"),
     WEB_SEARCH("web_search", Risk.L0_SAFE, Category.WEB, mapOf("query" to TextParam(200)), "Search in the browser"),
     GO_BACK("go_back", Risk.L0_SAFE, Category.SCREEN, description = "Press back"),
@@ -53,7 +54,7 @@ enum class Tool(
         "send_whatsapp", Risk.L2_OUTBOUND, Category.MESSAGES,
         mapOf("to" to TextParam(60), "body" to TextParam(480)), "Send a WhatsApp message",
     ),
-    PLACE_CALL("place_call", Risk.L2_OUTBOUND, Category.CALLS, mapOf("to" to TextParam(60)), "Place a phone call");
+    PLACE_CALL("place_call", Risk.L0_SAFE, Category.CALLS, mapOf("to" to TextParam(60)), "Place a phone call");
 
     val hasRecipient: Boolean get() = "to" in params
 

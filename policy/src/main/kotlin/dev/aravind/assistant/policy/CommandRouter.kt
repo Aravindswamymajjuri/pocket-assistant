@@ -15,8 +15,17 @@ object CommandRouter {
     /** Splits "open maps and then go home" into at most five steps. */
     fun steps(text: String): List<String> = text.split(splitter).map { it.trim() }.filter { it.isNotEmpty() }.take(5)
 
+    private val misheardTurn = Regex("(?i)^(?:please\\s+)?(?:turrent|turret|turned|turnt|torn|tern|term|tune|trun|ton)\\b")
+    private val joinedTurn = Regex("(?i)^turn(on|off)\\b")
+
+    /** Repairs common speech mistakes at the start of a command. Message text is left alone. */
+    fun normalize(text: String): String {
+        val cleaned = text.trim().trimEnd('.', '!', '?', ',').replace(Regex("\\s+"), " ")
+        return cleaned.replace(misheardTurn, "turn").replace(joinedTurn) { "turn ${it.groupValues[1]}" }
+    }
+
     fun route(text: String): ToolCall? {
-        val t = text.trim().trimEnd('.', '!', '?')
+        val t = normalize(text)
         val raw = match(t) ?: return null
         return (ToolValidator.validate(raw.first, raw.second) as? Validated.Ok)?.call
     }
@@ -28,11 +37,13 @@ object CommandRouter {
         find("(?:go |press )?back")?.let { return "go_back" to emptyMap() }
         find("go (?:to )?(?:the )?home(?: screen)?")?.let { return "go_home" to emptyMap() }
         find("scroll (up|down)")?.let { return "scroll" to mapOf("direction" to it[1].lowercase()) }
-        find("(?:turn )?(?:the )?(?:flash ?light|torch) (on|off)")?.let { return "flashlight" to mapOf("on" to (it[1].lowercase() == "on")) }
-        find("turn (on|off) (?:the )?(?:flash ?light|torch)")?.let { return "flashlight" to mapOf("on" to (it[1].lowercase() == "on")) }
+        find("(?:turn |switch )?(?:the |my )?(?:flash ?light|flash|torch|torch ?light) (on|off)")?.let { return "flashlight" to mapOf("on" to (it[1].lowercase() == "on")) }
+        find("(?:turn|switch) (on|off) (?:the |my )?(?:flash ?light|flash|torch|torch ?light)")?.let { return "flashlight" to mapOf("on" to (it[1].lowercase() == "on")) }
+        find("(?:turn|switch) (on|off) (?:the |my )?(?:mobile |cellular )?(?:data|internet)(?: network| connection)?")?.let { return "mobile_data" to mapOf("on" to (it[1].lowercase() == "on")) }
+        find("(?:turn |switch )?(?:the |my )?(?:mobile |cellular )?(?:data|internet)(?: network| connection)? (on|off)")?.let { return "mobile_data" to mapOf("on" to (it[1].lowercase() == "on")) }
         find("(?:turn )?(?:the )?volume (up|down)")?.let { return "volume" to mapOf("direction" to it[1].lowercase()) }
-        find("(?:turn |switch )?(?:the )?(wi-?fi|wi fi|bluetooth) (on|off)")?.let { return toggle(it[1], it[2]) }
-        find("(?:turn|switch) (on|off) (?:the )?(wi-?fi|wi fi|bluetooth)")?.let { return toggle(it[2], it[1]) }
+        find("(?:turn |switch )?(?:the |my )?(wi-?fi|wi fi|why fi|blue ?tooth) (on|off)")?.let { return toggle(it[1], it[2]) }
+        find("(?:turn|switch) (on|off) (?:the |my )?(wi-?fi|wi fi|why fi|blue ?tooth)")?.let { return toggle(it[2], it[1]) }
         find("(?:turn |switch )?(?:the )?do not disturb (on|off)")?.let { return "do_not_disturb" to mapOf("on" to (it[1].lowercase() == "on")) }
         find("(?:turn|switch) (on|off) (?:the )?do not disturb")?.let { return "do_not_disturb" to mapOf("on" to (it[1].lowercase() == "on")) }
         find("(?:set )?(?:the )?brightness (?:to |at )?(\\d{1,3})(?: ?%| percent)?")?.let { return "brightness" to mapOf("percent" to it[1].toLong()) }
@@ -48,7 +59,7 @@ object CommandRouter {
         find("(?:search|google|look up)(?: for)? (.+)")?.let { return "web_search" to mapOf("query" to it[1]) }
         find("(?:open|launch|start) (.+)")?.let { return "open_app" to mapOf("name" to it[1]) }
         find("(?:tap|click|press|select) (?:on )?(.+)")?.let { return "tap_text" to mapOf("text" to it[1]) }
-        find("(?:call|phone|dial) (.+)")?.let { return "place_call" to mapOf("to" to it[1]) }
+        find("(?:please )?(?:make a call to|give a call to|call to|call|phone|dial|ring)(?: to)? (?:my )?(.+)")?.let { return "place_call" to mapOf("to" to it[1]) }
         find("(?:send )?(?:a )?(?:sms|text)(?: message)? to (.+?) (?:saying|that says|says) (.+)")?.let {
             return "send_sms" to mapOf("to" to it[1], "body" to it[2])
         }
@@ -59,7 +70,7 @@ object CommandRouter {
     }
 
     private fun toggle(device: String, state: String): Pair<String, Map<String, Any?>> {
-        val tool = if (device.lowercase() == "bluetooth") "bluetooth" else "wifi"
+        val tool = if (device.lowercase().replace(" ", "") == "bluetooth") "bluetooth" else "wifi"
         return tool to mapOf("on" to (state.lowercase() == "on"))
     }
 

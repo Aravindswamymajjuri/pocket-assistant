@@ -344,8 +344,86 @@ class BpeTokenizer(private val pieces: Map<String, Float>) {
     }
 }
 
+/** Finds the contact you meant, even if speech recognition got the spelling slightly wrong. */
+object ContactMatcher {
+    private val groups = listOf(
+        setOf("daddy", "dad", "papa", "father", "nanna", "nannagaru", "appa", "dady", "daddi"),
+        setOf("mummy", "mum", "mom", "mother", "amma", "ammagaru", "mummi"),
+        setOf("brother", "bro", "anna", "annayya"),
+        setOf("sister", "sis", "akka", "chelli"),
+    )
+    private val fillers = setOf("to", "my", "the", "please", "garu", "gaaru", "number", "mobile", "phone")
+
+    private fun words(text: String) = text.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() && it !in fillers }
+
+    private fun aliases(word: String): Set<String> = groups.firstOrNull { word in it } ?: setOf(word)
+
+    fun distance(a: String, b: String): Int {
+        var previous = IntArray(b.length + 1) { it }
+        for (i in 1..a.length) {
+            val current = IntArray(b.length + 1)
+            current[0] = i
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                current[j] = minOf(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+            }
+            previous = current
+        }
+        return previous[b.length]
+    }
+
+    private fun score(query: List<String>, name: String): Int {
+        val target = words(name)
+        if (query.isEmpty() || target.isEmpty()) return 0
+        if (query == target) return 100
+        if (query.all { q -> target.any { it in aliases(q) } }) return 90
+        if (query.all { q -> target.any { it.startsWith(q) || q.startsWith(it) } }) return 70
+        val close = query.all { q ->
+            val allowed = if (q.length <= 4) 1 else 2
+            target.any { t -> aliases(q).any { distance(it, t) <= allowed } }
+        }
+        return if (close) 50 else 0
+    }
+
+    /** Returns the single best contact, or null if nothing matches or two are equally likely. */
+    fun best(spoken: String, names: Collection<String>): String? {
+        val query = words(spoken)
+        val scored = names.distinct().map { it to score(query, it) }.filter { it.second > 0 }
+        val top = scored.maxOfOrNull { it.second } ?: return null
+        return scored.filter { it.second == top }.singleOrNull()?.first
+    }
+}
+
+/** Hints that help Whisper spell common commands and your assistant's name correctly. */
+object SpeechPrompt {
+    fun text(name: String): String =
+        "Hey $name. Turn on Wi-Fi. Turn off mobile data. Turn on the flashlight. Turn on Bluetooth. " +
+            "Call Daddy. Call Amma. Open WhatsApp. Set an alarm for 7 AM. Set brightness to 50 percent. Scroll down. Go back."
+}
+
 object WakeName {
     const val DEFAULT = "Assistant"
+
+    /**
+     * Checks speech for "hey" plus your assistant's name, allowing small spelling mistakes.
+     * Returns the words spoken after the name, or null if the name wasn't said.
+     */
+    fun heardIn(text: String, name: String): String? {
+        val spoken = text.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
+        val parts = name.lowercase().split(' ').filter { it.isNotEmpty() }
+        if (parts.isEmpty() || spoken.size < parts.size) return null
+        val allowed = if (parts.joinToString("").length <= 5) 1 else 2
+        val greetings = setOf("hey", "hi", "hello", "ok", "okay", "a", "he", "hay", "ay")
+        for (start in 0..minOf(1, spoken.size - parts.size)) {
+            if (start == 1 && spoken[0] !in greetings) continue
+            val candidate = spoken.subList(start, start + parts.size).joinToString("")
+            if (ContactMatcher.distance(candidate, parts.joinToString("")) <= allowed) {
+                return spoken.drop(start + parts.size).joinToString(" ")
+            }
+        }
+        return null
+    }
+
     private val allowed = Regex("^[A-Za-z]+( [A-Za-z]+)?$")
 
     /** Returns why a name can't be used, or null if it's fine. */
@@ -364,7 +442,7 @@ object WakeName {
     /** Builds the keyword line the engine expects, or null if the name can't be tokenized. */
     fun keywordLine(tokenizer: BpeTokenizer, name: String): String? {
         val tokens = tokenizer.encode(phrase(name)) ?: return null
-        return "${tokens.joinToString(" ")} :2.0 #0.3 @${phrase(name).replace(' ', '_')}"
+        return "${tokens.joinToString(" ")} :3.0 #0.15 @${phrase(name).replace(' ', '_')}"
     }
 }
 

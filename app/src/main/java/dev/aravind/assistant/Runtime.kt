@@ -89,10 +89,10 @@ object AssistantRuntime {
     }
 }
 
-/** A separate software switch for each tool category. All are off until turned on. */
+/** A separate software switch for each tool category. All are on until turned off. */
 object Gates {
     private fun prefs(context: Context) = context.getSharedPreferences("gates", Context.MODE_PRIVATE)
-    fun enabled(context: Context, category: Category) = prefs(context).getBoolean(category.name, false)
+    fun enabled(context: Context, category: Category) = prefs(context).getBoolean(category.name, true)
     fun set(context: Context, category: Category, value: Boolean) =
         prefs(context).edit().putBoolean(category.name, value).apply()
 
@@ -102,10 +102,10 @@ object Gates {
     fun lastUsed(context: Context, category: Category): Long = prefs(context).getLong("used_${category.name}", 0L)
 }
 
-/** Feature switches. Wake word and AI calling stay off until you turn them on. */
+/** Feature switches. The wake word is on by default, and AI calling stays off until you turn it on. */
 object Features {
     private fun prefs(context: Context) = context.getSharedPreferences("features", Context.MODE_PRIVATE)
-    fun wakeWord(context: Context) = prefs(context).getBoolean("wake", false)
+    fun wakeWord(context: Context) = prefs(context).getBoolean("wake", true)
     fun setWakeWord(context: Context, value: Boolean) = prefs(context).edit().putBoolean("wake", value).apply()
     fun aiCalls(context: Context) = prefs(context).getBoolean("calls", false)
     fun setAiCalls(context: Context, value: Boolean) = prefs(context).edit().putBoolean("calls", value).apply()

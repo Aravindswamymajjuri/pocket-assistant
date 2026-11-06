@@ -31,6 +31,7 @@ get "$BASE/v$SHERPA_VERSION/sherpa-onnx-$SHERPA_VERSION.aar"
 get "$BASE/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
 get "$BASE/asr-models/silero_vad.onnx"
 get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
+get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin"
 get "$BASE/tts-models/vits-piper-en_US-lessac-medium.tar.bz2"
 get "$BASE/tts-models/vits-piper-hi_IN-pratham-medium.tar.bz2"
 get "$BASE/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
@@ -79,6 +80,7 @@ PY
 cp "$WORK/silero_vad.onnx" "$OUT/vad/silero_vad.onnx"
 
 cp "$WORK/ggml-base-q5_1.bin" "$OUT/whisper/ggml-base-q5_1.bin"
+cp "$WORK/ggml-base.en-q5_1.bin" "$OUT/whisper/ggml-base.en-q5_1.bin"
 
 tar -xjf "$WORK/vits-piper-en_US-lessac-medium.tar.bz2" -C "$WORK"
 P="$WORK/vits-piper-en_US-lessac-medium"

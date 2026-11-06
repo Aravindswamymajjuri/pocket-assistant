@@ -18,7 +18,9 @@ import android.provider.AlarmClock
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.telephony.SmsManager
+import android.telephony.TelephonyManager
 import dev.aravind.assistant.policy.BlockedApps
+import dev.aravind.assistant.policy.ContactMatcher
 import dev.aravind.assistant.policy.PhoneTarget
 import dev.aravind.assistant.policy.Tool
 import dev.aravind.assistant.policy.ToolCall
@@ -37,6 +39,7 @@ class ToolExecutor(private val context: Context) {
         Tool.BRIGHTNESS -> brightness(call.long("percent").toInt())
         Tool.WIFI -> wifi(call.bool("on"))
         Tool.BLUETOOTH -> bluetooth(call.bool("on"))
+        Tool.MOBILE_DATA -> mobileData(call.bool("on"))
         Tool.DO_NOT_DISTURB -> doNotDisturb(call.bool("on"))
         Tool.LOCK_PHONE -> global(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN, "Locked")
         Tool.WEB_SEARCH -> webSearch(call.text("query"))
@@ -136,6 +139,7 @@ class ToolExecutor(private val context: Context) {
         on: Boolean,
         intent: Intent,
         isOn: () -> Boolean,
+        flip: (AutomationService) -> Boolean = { it.flipFirstSystemSwitch(on) },
     ): String {
         if (isOn() == on) return "$name is already ${if (on) "on" else "off"}"
         val service = AutomationService.instance
@@ -143,7 +147,7 @@ class ToolExecutor(private val context: Context) {
         if (service == null) return "I opened $name settings. Please tap the switch"
         repeat(12) {
             delay(250)
-            if (service.flipFirstSystemSwitch(on)) {
+            if (flip(service)) {
                 delay(1500)
                 service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
                 return if (isOn() == on) "$name ${if (on) "on" else "off"}" else "I tried, but please check $name"
@@ -160,6 +164,15 @@ class ToolExecutor(private val context: Context) {
     private suspend fun bluetooth(on: Boolean): String {
         val adapter = context.getSystemService(BluetoothManager::class.java).adapter ?: return "This phone has no Bluetooth"
         return flipFromSettings("Bluetooth", on, Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) { adapter.isEnabled }
+    }
+
+    private suspend fun mobileData(on: Boolean): String {
+        val phone = context.getSystemService(TelephonyManager::class.java)
+        return flipFromSettings(
+            "Mobile data", on, Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY),
+            { runCatching { phone.isDataEnabled }.getOrDefault(!on) },
+            { it.flipSwitchNear(listOf("mobile data", "mobile network", "cellular", "sim"), on) },
+        )
     }
 
     private fun webSearch(query: String): String {
@@ -187,29 +200,27 @@ class ToolExecutor(private val context: Context) {
     private fun granted(permission: String) =
         context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
-    /** Returns a number only for one exact contact match. It never guesses between people. */
+    /** Finds the contact you meant. If two are equally likely, it asks instead of guessing. */
     private fun resolveNumber(target: String): Pair<String?, String?> {
         if (PhoneTarget.looksLikeNumber(target)) return target to null
-        if (!granted(Manifest.permission.READ_CONTACTS)) return null to "Contacts permission is off"
-        val uri = Uri.withAppendedPath(ContactsContract.CommonDataKinds.Phone.CONTENT_FILTER_URI, Uri.encode(target))
+        if (!granted(Manifest.permission.READ_CONTACTS)) return null to "Allow Contacts permission in the app first"
         val columns = arrayOf(
             ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
             ContactsContract.CommonDataKinds.Phone.NORMALIZED_NUMBER,
             ContactsContract.CommonDataKinds.Phone.NUMBER,
+            ContactsContract.CommonDataKinds.Phone.IS_SUPER_PRIMARY,
         )
-        val numbers = LinkedHashSet<String>()
-        context.contentResolver.query(uri, columns, null, null, null)?.use { cursor ->
+        val numbers = LinkedHashMap<String, MutableList<Pair<String, Boolean>>>()
+        context.contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, columns, null, null, null)?.use { cursor ->
             while (cursor.moveToNext()) {
-                if (cursor.getString(0).equals(target, ignoreCase = true)) {
-                    numbers += cursor.getString(1) ?: cursor.getString(2)
-                }
+                val name = cursor.getString(0) ?: continue
+                val number = cursor.getString(1) ?: cursor.getString(2) ?: continue
+                numbers.getOrPut(name) { ArrayList() }.add(number to (cursor.getInt(3) == 1))
             }
         }
-        return when (numbers.size) {
-            0 -> null to "I couldn't find exactly $target in your contacts"
-            1 -> numbers.first() to null
-            else -> null to "$target has more than one number, so please say the number"
-        }
+        val name = ContactMatcher.best(target, numbers.keys) ?: return null to "I couldn't find $target in your contacts"
+        val options = numbers.getValue(name)
+        return (options.firstOrNull { it.second } ?: options.first()).first to null
     }
 
     private fun sendSms(to: String, body: String): String {
