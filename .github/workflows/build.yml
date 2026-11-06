@@ -59,7 +59,7 @@ jobs:
           gradle :app:lintRelease --stacktrace
           AAPT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/aapt2"
           "$AAPT" dump badging app/build/outputs/apk/release/app-release.apk | tee badging.txt | grep -E "^(package|minSdkVersion|sdkVersion|targetSdkVersion|native-code)"
-          grep -q "sdkVersion:'31'" badging.txt
+          grep -q "minSdkVersion:'31'" badging.txt
       - name: Report resolved LiteRT-LM version
         run: gradle :app:dependencies --configuration releaseRuntimeClasspath | grep -m3 -E 'litertlm|sherpa' || true
       - name: Check manifest has no internet access
