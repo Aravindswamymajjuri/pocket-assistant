@@ -63,7 +63,7 @@ dependencies {
     implementation(files("libs/sherpa-onnx-1.13.8.aar"))
     implementation("androidx.room:room-runtime:2.8.4")
     ksp("androidx.room:room-compiler:2.8.4")
-    implementation("net.zetetic:sqlcipher-android:4.19.0@aar")
+    implementation("net.zetetic:sqlcipher-android:4.20.0@aar")
     implementation("androidx.sqlite:sqlite:2.6.2")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
 }
