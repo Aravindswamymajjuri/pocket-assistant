@@ -1,0 +1,99 @@
+name: Build Windows app
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install sherpa-onnx==1.13.8 sentencepiece pypinyin click
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/voice-models
+          key: voice-models-${{ hashFiles('scripts/fetch_models.sh') }}
+      - name: Download voice models
+        run: bash scripts/fetch_models.sh
+      - name: Download Windows speech library
+        run: |
+          mkdir -p desktop/libs
+          BASE=https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8
+          for f in sherpa-onnx-jvm-1.13.8.jar sherpa-onnx-native-lib-win-x64-1.13.8.jar; do
+            curl -fsSL --retry 3 -o "desktop/libs/$f" "$BASE/$f"
+          done
+          (cd desktop/libs && sha256sum *.jar)
+          if [ -s scripts/desktop.sha256 ]; then (cd desktop/libs && sha256sum --check ../../scripts/desktop.sha256); fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voice-assets
+          path: |
+            app/src/main/assets/models
+            desktop/libs
+          retention-days: 1
+  windows:
+    needs: models
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      DESKTOP_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+      - uses: actions/download-artifact@v4
+        with:
+          name: voice-assets
+          path: assets
+      - name: Put voice files in place
+        shell: bash
+        run: |
+          ls assets
+          mkdir -p desktop/libs
+          cp assets/desktop/libs/* desktop/libs/
+      - name: Build whisper.cpp for Windows
+        shell: bash
+        run: |
+          git clone --quiet --depth 1 -b v1.9.5 https://github.com/ggml-org/whisper.cpp desktop/native/whisper.cpp
+          [ "$(git -C desktop/native/whisper.cpp rev-parse HEAD)" = "d1be6fde11ac6e0407606b4e42fe72d34add8037" ]
+          cmake -S desktop/native -B native-build -A x64
+          cmake --build native-build --config Release --target whisperjni
+          find native-build -name 'whisperjni.dll'
+      - name: Run security tests
+        run: gradle :policy:test --stacktrace
+      - name: Build app
+        run: gradle :desktop:installDist --stacktrace
+      - name: Package app
+        shell: bash
+        run: |
+          jpackage --type app-image --name PocketAssistant \
+            --input desktop/build/install/desktop/lib --main-jar desktop.jar \
+            --main-class dev.aravind.assistant.MainKt --java-options -Dfile.encoding=UTF-8 --dest dist
+          mkdir -p dist/PocketAssistant/app/native
+          cp "$(find native-build -name whisperjni.dll | head -1)" dist/PocketAssistant/app/native/
+          cp -r assets/app/src/main/assets/models dist/PocketAssistant/app/models
+          cp desktop/packaging/*.bat dist/
+          du -sh dist
+      - name: Run the real self-test on the packaged app
+        shell: pwsh
+        run: |
+          $report = "$env:RUNNER_TEMP\self-test.txt"
+          $p = Start-Process -FilePath dist\PocketAssistant\PocketAssistant.exe -ArgumentList "--self-test",$report -PassThru -Wait
+          Get-Content $report
+          if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocket-assistant-windows
+          path: dist
+          if-no-files-found: error

@@ -27,6 +27,16 @@ Known limits:
 - Wi-Fi and Bluetooth use the settings screen, because Android 13 blocks direct switching
 - There is no allow-list of apps yet, only a block list
 
+## Windows laptop version
+
+The `desktop` folder holds a Windows version that shares the same policy engine and security tests.
+
+Laptop limits:
+- No SIM, so there's no SMS or AI call answering. Calls are handed to Phone Link
+- Windows doesn't let this app read notifications or control Do Not Disturb
+- Screen tapping only works in apps that expose Windows UI Automation
+- Alarms and timers only ring while the assistant is on
+
 ## Build
 
 Every push to `main` runs the security tests and builds `app-release.apk`. Download it from the workflow run's artifacts.

@@ -265,4 +265,22 @@ class SecurityTest {
         assertTrue(CommandRouter.isStop("बंद करो"))
         assertTrue(CommandRouter.isStop("ఆపు."))
     }
+
+    @Test fun windowsSystemToolsAreProtected() {
+        val tap = call("tap_text", "text" to "Yes")
+        listOf("cmd.exe", "powershell.exe", "regedit.exe", "systemsettings.exe", "taskmgr.exe").forEach { exe ->
+            assertTrue(exe, PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = exe)) is Decision.Deny)
+        }
+        assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "notepad.exe")) is Decision.Biometric)
+        assertTrue(PolicyEngine.evaluate(call("open_app", "name" to "Windows Terminal"), ctx) is Decision.Deny)
+        assertTrue(PolicyEngine.evaluate(call("open_app", "name" to "Command Prompt"), ctx) is Decision.Deny)
+        assertTrue(PolicyEngine.evaluate(call("open_app", "name" to "Notepad"), ctx) is Decision.Allow)
+    }
+
+    @Test fun windowsModelPathRules() {
+        assertNull(ModelPath.windowsProblem("C:\\Models\\gemma-4-E2B-it.litertlm"))
+        assertNotNull(ModelPath.windowsProblem("gemma.litertlm"))
+        assertNotNull(ModelPath.windowsProblem("C:\\Models\\..\\gemma.litertlm"))
+        assertNotNull(ModelPath.windowsProblem("C:\\Models\\gemma.bin"))
+    }
 }

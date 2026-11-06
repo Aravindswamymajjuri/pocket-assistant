@@ -29,9 +29,15 @@ object BlockedApps {
         "com.android.settings", "com.android.permissioncontroller", "com.google.android.permissioncontroller",
         "com.android.packageinstaller", "com.google.android.packageinstaller", "com.android.vending",
         "com.google.android.gms", "com.coloros.safecenter", "com.oplus.safecenter",
+        // Windows programs that could change the system or run commands.
+        "cmd.exe", "powershell.exe", "pwsh.exe", "windowsterminal.exe", "wt.exe", "conhost.exe", "regedit.exe",
+        "mmc.exe", "taskmgr.exe", "systemsettings.exe", "control.exe", "consent.exe", "msiexec.exe",
+        "secpol.msc", "gpedit.msc", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe",
+        "1password.exe", "bitwarden.exe", "keepass.exe", "keepassxc.exe",
     )
     private val labelWords = Regex(
-        "(?i)\\b(bank|banking|upi|wallet|pay|paytm|phonepe|gpay|password|passwords|authenticator|crypto|trading|broker)\\b",
+        "(?i)\\b(bank|banking|upi|wallet|pay|paytm|phonepe|gpay|password|passwords|authenticator|crypto|trading|broker|" +
+            "terminal|powershell|command prompt|cmd|registry|regedit|task manager|bitlocker)\\b",
     )
 
     /** These apps must not be opened by the assistant. */
@@ -267,6 +273,18 @@ object VoiceMatch {
 }
 
 object ModelPath {
+    /** The Windows version of the path check. */
+    fun windowsProblem(path: String): String? {
+        val p = path.trim()
+        return when {
+            p.isEmpty() -> "Enter the model path"
+            !Regex("^[A-Za-z]:\\\\.+").containsMatchIn(p) -> "Enter the full path, starting with a drive like C:\\"
+            p.split('\\').any { it == ".." } -> "The path can't contain .."
+            !p.lowercase().endsWith(".litertlm") -> "The model must be a .litertlm file"
+            else -> null
+        }
+    }
+
     /** Returns why a typed path can't be used, or null if its format is acceptable. */
     fun problem(path: String): String? {
         val p = path.trim()

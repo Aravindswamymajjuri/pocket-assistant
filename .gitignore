@@ -10,3 +10,5 @@ app/libs/
 app/src/main/assets/models/
 app/src/main/cpp/whisper.cpp/
 .cxx/
+desktop/libs/
+desktop/native/whisper.cpp/

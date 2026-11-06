@@ -1,0 +1,22 @@
+cmake_minimum_required(VERSION 3.22)
+project(assistant_whisper C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+set(GGML_AVX2 ON CACHE BOOL "" FORCE)
+set(GGML_FMA ON CACHE BOOL "" FORCE)
+set(GGML_F16C ON CACHE BOOL "" FORCE)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+
+find_package(JNI REQUIRED)
+add_subdirectory(${CMAKE_SOURCE_DIR}/whisper.cpp whisper-build)
+
+# The phone and laptop apps share the same JNI code.
+add_library(whisperjni SHARED ${CMAKE_SOURCE_DIR}/../../app/src/main/cpp/whisper_jni.cpp)
+target_include_directories(whisperjni PRIVATE ${JNI_INCLUDE_DIRS})
+target_link_libraries(whisperjni PRIVATE whisper)

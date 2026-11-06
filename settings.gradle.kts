@@ -4,4 +4,6 @@ dependencyResolutionManagement {
     repositories { google(); mavenCentral() }
 }
 rootProject.name = "pocket-assistant"
-include(":policy", ":app")
+include(":policy", ":desktop")
+// The Windows build doesn't need the Android app or its SDK.
+if (System.getenv("DESKTOP_ONLY") == null) include(":app")
