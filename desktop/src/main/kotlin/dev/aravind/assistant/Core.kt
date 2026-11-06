@@ -187,7 +187,7 @@ object Ps {
         val prelude = "try { [Console]::OutputEncoding=[Text.Encoding]::UTF8 } catch {}\n\$ErrorActionPreference='Stop'\n"
         val encoded = Base64.getEncoder().encodeToString((prelude + script).toByteArray(StandardCharsets.UTF_16LE))
         val process = ProcessBuilder(exe, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encoded)
-            .redirectErrorStream(true)
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
             .also { it.environment().putAll(env) }
             .start()
         process.outputStream.close()
