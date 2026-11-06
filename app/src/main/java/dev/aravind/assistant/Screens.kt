@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import dev.aravind.assistant.policy.Category
+import dev.aravind.assistant.policy.WakeName
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -151,7 +152,7 @@ private val runtimePermissions = listOf(
 
 private val categoryNames = mapOf(
     Category.APPS to "Open apps",
-    Category.SYSTEM to "Alarms, flashlight, volume, lock",
+    Category.SYSTEM to "Alarms, device settings, lock",
     Category.SCREEN to "Screen control",
     Category.NOTIFICATIONS to "Read notifications",
     Category.MESSAGES to "SMS and WhatsApp",
@@ -171,6 +172,7 @@ private fun HomeScreen(activity: FragmentActivity) {
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
     var modelPath by remember { mutableStateOf(ModelStore.path(activity).orEmpty()) }
+    var wakeName by remember { mutableStateOf(Features.wakeName(activity)) }
     var allowedNumbers by remember { mutableStateOf(CallRules.allowedNumbers(activity)) }
     val paused by AssistantRuntime.pausedUntil.collectAsState()
     val modelBrowser = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -319,12 +321,60 @@ private fun HomeScreen(activity: FragmentActivity) {
                 Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.fromParts("package", packageName, null)),
             )
         }
+        val canWriteSettings = remember(refreshKey) { Settings.System.canWrite(activity) }
+        StateRow("Modify system settings (brightness)", if (canWriteSettings) "On" else "Off", "Open settings") {
+            activity.startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.fromParts("package", packageName, null)))
+        }
+        val dndAccess = remember(refreshKey) { activity.getSystemService(NotificationManager::class.java).isNotificationPolicyAccessGranted }
+        StateRow("Do Not Disturb access", if (dndAccess) "On" else "Off", "Open settings") {
+            activity.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+        }
         Button(onClick = { refresh++ }, Modifier.fillMaxWidth()) { Text("Refresh status") }
 
         HorizontalDivider()
         Text("Voice", style = MaterialTheme.typography.titleSmall)
         val wakeOn = remember(refreshKey) { Features.wakeWord(activity) }
-        ToggleRow("Wake word: Hey Assistant", "The mic stays open while this is on", wakeOn) { on ->
+        OutlinedTextField(
+            value = wakeName,
+            onValueChange = { wakeName = it },
+            label = { Text("Assistant name") },
+            supportingText = { Text("You'll say: ${WakeName.phrase(wakeName).lowercase()}") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedButton(
+            onClick = {
+                val problem = WakeName.problem(wakeName)
+                if (problem != null) {
+                    message = problem
+                } else {
+                    activity.authenticate("Change assistant name", "Confirm it's you") { ok ->
+                        if (ok) {
+                            Features.setWakeName(activity, wakeName)
+                            AssistantService.instance?.onWakeNameChanged()
+                            message = "Name saved. Say: ${WakeName.phrase(wakeName).lowercase()}"
+                        }
+                    }
+                }
+            },
+            Modifier.fillMaxWidth(),
+        ) { Text("Save name") }
+        val language = remember(refreshKey) { Features.language(activity) }
+        Text("Speaking language", style = MaterialTheme.typography.bodyLarge)
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("en" to "English", "hi" to "Hindi", "te" to "Telugu", "auto" to "Auto").forEach { (code, label) ->
+                val onClick = {
+                    Features.setLanguage(activity, code)
+                    refresh++
+                    Unit
+                }
+                if (code == language) {
+                    Button(onClick = onClick) { Text(label) }
+                } else {
+                    OutlinedButton(onClick = onClick) { Text(label) }
+                }
+            }
+        }
+        ToggleRow("Wake word", "The mic stays open while this is on", wakeOn) { on ->
             if (!on) {
                 Features.setWakeWord(activity, false)
                 refresh++

@@ -9,7 +9,6 @@ import android.telecom.TelecomManager
 import android.telephony.TelephonyManager
 import dev.aravind.assistant.policy.SecretRedactor
 import kotlinx.coroutines.delay
-import java.io.File
 import kotlin.math.sqrt
 
 /** Only fires for numbers you allowed. Nothing happens unless AI call mode is on. */
@@ -41,20 +40,13 @@ object CallRules {
     }
 }
 
-/** Caller messages are text only and stored encrypted. Call audio is never saved. */
+/** Caller messages are text only and stored in the encrypted database. Call audio is never saved. */
 object CallMessages {
-    private fun file(context: Context) = File(context.noBackupFilesDir, "call_messages.enc")
-
     fun add(context: Context, text: String) {
-        val current = list(context) + text
-        file(context).writeBytes(Keys.encrypt(current.takeLast(30).joinToString("\u0001").toByteArray()))
+        Db.get(context).callMessages().insert(CallMessageRow(time = System.currentTimeMillis(), text = text))
     }
 
-    fun list(context: Context): List<String> {
-        val f = file(context)
-        if (!f.exists()) return emptyList()
-        return runCatching { String(Keys.decrypt(f.readBytes())).split('\u0001') }.getOrDefault(emptyList())
-    }
+    fun list(context: Context): List<String> = Db.get(context).callMessages().latest().map { it.text }
 }
 
 /**

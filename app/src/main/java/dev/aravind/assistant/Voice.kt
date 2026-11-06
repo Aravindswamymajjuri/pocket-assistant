@@ -12,14 +12,10 @@ import android.media.ToneGenerator
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.KeywordSpotter
 import com.k2fsa.sherpa.onnx.KeywordSpotterConfig
-import com.k2fsa.sherpa.onnx.OfflineModelConfig
-import com.k2fsa.sherpa.onnx.OfflineRecognizer
-import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
-import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.k2fsa.sherpa.onnx.OnlineModelConfig
 import com.k2fsa.sherpa.onnx.OnlineStream
 import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
@@ -28,7 +24,9 @@ import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractor
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
+import dev.aravind.assistant.policy.BpeTokenizer
 import dev.aravind.assistant.policy.VoiceMatch
+import dev.aravind.assistant.policy.WakeName
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,7 +46,7 @@ private const val SAMPLE_RATE = 16_000
 
 /** Voice models ship in the APK and are unpacked to private storage on first use. */
 object VoiceAssets {
-    private const val VERSION = "1"
+    private const val VERSION = "2"
 
     fun dir(context: Context) = File(context.noBackupFilesDir, "voice")
 
@@ -108,52 +106,37 @@ class VoiceEngines(context: Context) {
         ),
     )
 
-    private val recognizer by lazy {
-        OfflineRecognizer(
-            config = OfflineRecognizerConfig(
-                featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
-                modelConfig = OfflineModelConfig(
-                    whisper = OfflineWhisperModelConfig(
-                        encoder = "$root/whisper/encoder.onnx",
-                        decoder = "$root/whisper/decoder.onnx",
-                    ),
-                    tokens = "$root/whisper/tokens.txt",
-                    modelType = "whisper",
-                    numThreads = 2,
-                ),
-            ),
-        )
+    private val whisperModel = "$root/whisper/ggml-base-q5_1.bin"
+
+    /** Builds the wake phrase from the name saved in Control Center. */
+    fun wakeKeywords(context: Context): String {
+        val vocab = File(root, "kws/bpe.vocab")
+        val tokenizer = BpeTokenizer.parse(vocab.readLines().asSequence())
+        return WakeName.keywordLine(tokenizer, Features.wakeName(context))
+            ?: requireNotNull(WakeName.keywordLine(tokenizer, WakeName.DEFAULT))
     }
 
     private val extractor by lazy {
         SpeakerEmbeddingExtractor(config = SpeakerEmbeddingExtractorConfig(model = "$root/speaker/model.onnx", numThreads = 2))
     }
 
-    private val tts by lazy {
-        OfflineTts(
-            config = OfflineTtsConfig(
-                model = OfflineTtsModelConfig(
-                    vits = OfflineTtsVitsModelConfig(
-                        model = "$root/piper/model.onnx",
-                        tokens = "$root/piper/tokens.txt",
-                        dataDir = "$root/piper/espeak-ng-data",
-                    ),
-                    numThreads = 2,
+    private fun piper(folder: String) = OfflineTts(
+        config = OfflineTtsConfig(
+            model = OfflineTtsModelConfig(
+                vits = OfflineTtsVitsModelConfig(
+                    model = "$root/$folder/model.onnx",
+                    tokens = "$root/$folder/tokens.txt",
+                    dataDir = "$root/piper/espeak-ng-data",
                 ),
+                numThreads = 2,
             ),
-        )
-    }
+        ),
+    )
 
-    fun transcribe(samples: FloatArray): String {
-        val stream = recognizer.createStream()
-        try {
-            stream.acceptWaveform(samples, SAMPLE_RATE)
-            recognizer.decode(stream)
-            return recognizer.getResult(stream).text.trim()
-        } finally {
-            stream.release()
-        }
-    }
+    private val english by lazy { piper("piper") }
+    private val hindi by lazy { piper("piper-hi") }
+
+    fun transcribe(samples: FloatArray, language: String): String = WhisperCpp.transcribe(whisperModel, samples, language)
 
     fun embedding(samples: FloatArray): FloatArray? {
         val stream: OnlineStream = extractor.createStream()
@@ -166,7 +149,33 @@ class VoiceEngines(context: Context) {
         }
     }
 
-    fun synthesize(text: String) = tts.generate(text, sid = 0, speed = 1.0f)
+    fun synthesize(text: String, useHindi: Boolean) = (if (useHindi) hindi else english).generate(text, sid = 0, speed = 1.0f)
+}
+
+/** whisper.cpp through a small JNI layer. Its model loads once and is freed when the assistant stops. */
+object WhisperCpp {
+    private var handle = 0L
+
+    init {
+        System.loadLibrary("whisperjni")
+    }
+
+    private external fun nativeInit(model: String): Long
+    private external fun nativeTranscribe(handle: Long, samples: FloatArray, language: String, threads: Int): String
+    private external fun nativeFree(handle: Long)
+
+    @Synchronized
+    fun transcribe(model: String, samples: FloatArray, language: String): String {
+        if (handle == 0L) handle = nativeInit(model)
+        check(handle != 0L) { "The speech model failed to load" }
+        return nativeTranscribe(handle, samples, language, 4).trim()
+    }
+
+    @Synchronized
+    fun release() {
+        if (handle != 0L) nativeFree(handle)
+        handle = 0L
+    }
 }
 
 /** Your voiceprint is an encrypted list of numbers. Raw enrollment audio isn't kept. */
@@ -218,6 +227,14 @@ class VoiceLoop(
     @Volatile
     private var busy = false
 
+    @Volatile
+    private var wakeChanged = false
+
+    /** Applies a new wake name without restarting the assistant. */
+    fun reloadWakeName() {
+        wakeChanged = true
+    }
+
     private var record: AudioRecord? = null
 
     fun requestListen() = listenRequested.set(true)
@@ -231,8 +248,9 @@ class VoiceLoop(
         return result
     }
 
-    fun understand(samples: FloatArray): Heard {
-        val text = engines.transcribe(samples)
+    /** Language is a Whisper code. Leave it null to use the language chosen in Control Center. */
+    fun understand(samples: FloatArray, language: String? = null): Heard {
+        val text = engines.transcribe(samples, language ?: Features.language(context))
         val verified = VoiceId.matches(context, engines.embedding(samples))
         return Heard(text, verified, samples)
     }
@@ -310,7 +328,12 @@ class VoiceLoop(
                     continue
                 }
                 if (wantWake) {
-                    val stream = wakeStream ?: engines.spotter.createStream().also { wakeStream = it }
+                    if (wakeChanged) {
+                        wakeChanged = false
+                        wakeStream?.release()
+                        wakeStream = null
+                    }
+                    val stream = wakeStream ?: engines.spotter.createStream(engines.wakeKeywords(context)).also { wakeStream = it }
                     stream.acceptWaveform(frame, SAMPLE_RATE)
                     while (engines.spotter.isReady(stream)) {
                         engines.spotter.decode(stream)
@@ -412,11 +435,11 @@ class VoiceOutput(private val engines: VoiceEngines, private val loop: () -> Voi
     private val mutex = Mutex()
 
     /** Returns false if Piper couldn't speak, so the caller can use the fallback voice. */
-    suspend fun say(text: String): Boolean = mutex.withLock {
+    suspend fun say(text: String, useHindi: Boolean): Boolean = mutex.withLock {
         withContext(Dispatchers.Default) {
             loop()?.speaking = true
             try {
-                val audio = engines.synthesize(text)
+                val audio = engines.synthesize(text, useHindi)
                 play(audio.samples, audio.sampleRate)
                 true
             } catch (e: Exception) {

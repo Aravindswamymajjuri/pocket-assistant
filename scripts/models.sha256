@@ -1,6 +1,5 @@
 357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b  3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx
 633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96  sherpa-onnx-1.13.8.aar
 f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a  sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2
-2bd6cf965c8bb3e068ef9fa2191387ee63a9dfa2a4e37582a8109641c20005dd  sherpa-onnx-whisper-tiny.en.tar.bz2
 9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6  silero_vad.onnx
 9e3febfacf0abf4270172d2958bcec246032b7e88efc2720840cc80c93de334e  vits-piper-en_US-lessac-medium.tar.bz2

@@ -213,4 +213,56 @@ class SecurityTest {
         assertNotNull(ModelPath.problem("/sdcard/Download/model.bin"))
         assertNotNull(ModelPath.problem("/storage/emulated/0/Android/data/com.other/files/model.litertlm"))
     }
+
+    @Test fun deviceControlsRouteAndNeedApproval() {
+        assertEquals(Tool.WIFI, CommandRouter.route("turn off wifi")?.tool)
+        assertEquals(true, CommandRouter.route("turn on bluetooth")?.bool("on"))
+        assertEquals(false, CommandRouter.route("do not disturb off")?.bool("on"))
+        assertEquals(40L, CommandRouter.route("set brightness to 40 percent")?.long("percent"))
+        assertNull(CommandRouter.route("set brightness to 400 percent"))
+        assertTrue(PolicyEngine.evaluate(call("wifi", "on" to false), ctx) is Decision.Biometric)
+        assertTrue(PolicyEngine.evaluate(call("wifi", "on" to false), ctx.copy(voiceVerified = true)) is Decision.Allow)
+        assertTrue(PolicyEngine.evaluate(call("brightness", "percent" to 40L), ctx) is Decision.Allow)
+    }
+
+    @Test fun wakeNameRules() {
+        assertNull(WakeName.problem("Nova"))
+        assertNull(WakeName.problem("Sita Ram"))
+        assertNotNull(WakeName.problem("no"))
+        assertNotNull(WakeName.problem("నోవా"))
+        assertNotNull(WakeName.problem("Nova@1"))
+        assertEquals("HEY NOVA", WakeName.phrase(" nova "))
+    }
+
+    @Test fun tokenizerPicksBestSplit() {
+        val tokenizer = BpeTokenizer(mapOf("\u2581HE" to -2f, "Y" to -3f, "\u2581HEY" to -9f, "\u2581NO" to -2f, "VA" to -2f))
+        assertEquals(listOf("\u2581HE", "Y", "\u2581NO", "VA"), tokenizer.encode("hey nova"))
+        assertNull(tokenizer.encode("hey 1"))
+        assertEquals("\u2581HE Y \u2581NO VA :2.0 #0.3 @HEY_NOVA", WakeName.keywordLine(tokenizer, "Nova"))
+    }
+
+    /** Compares our Kotlin tokenizer against the real one, on the real model files. */
+    @Test fun tokenizerMatchesRealModel() {
+        val dir = java.io.File("../app/src/main/assets/models/kws")
+        val vocab = java.io.File(dir, "bpe.vocab")
+        if (!vocab.exists()) return
+        val tokenizer = BpeTokenizer.parse(vocab.readLines().asSequence())
+        val cases = java.io.File(dir, "bpe_fixture.txt").readLines()
+        assertTrue(cases.size >= 6)
+        cases.forEach { line ->
+            val (phrase, tokens) = line.split('\t')
+            assertEquals(phrase, tokens, tokenizer.encode(phrase)?.joinToString(" "))
+        }
+    }
+
+    @Test fun scriptDetectionPicksVoice() {
+        assertEquals(Script.TELUGU, ScriptDetect.of("నమస్కారం, మీరు ఎలా ఉన్నారు"))
+        assertEquals(Script.DEVANAGARI, ScriptDetect.of("नमस्ते, आप कैसे हैं"))
+        assertEquals(Script.LATIN, ScriptDetect.of("Hello there"))
+    }
+
+    @Test fun stopWorksInHindiAndTelugu() {
+        assertTrue(CommandRouter.isStop("बंद करो"))
+        assertTrue(CommandRouter.isStop("ఆపు."))
+    }
 }

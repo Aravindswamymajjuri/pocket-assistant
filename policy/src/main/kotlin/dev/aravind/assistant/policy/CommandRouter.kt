@@ -5,7 +5,12 @@ object CommandRouter {
     private val stop = Regex("(?i)^(?:please\\s+)?(?:stop|cancel|turn off|shut down|be quiet|quiet)(?:\\s+(?:now|listening|assistant))?[.!]*$")
     private val splitter = Regex("(?i)\\s*(?:,\\s*)?\\b(?:and then|after that|then)\\b\\s*")
 
-    fun isStop(text: String): Boolean = stop.matches(text.trim())
+    private val localStops = setOf("रुको", "रुक जाओ", "बंद करो", "बंद", "ఆపు", "ఆగు", "ఆపండి", "ఆగండి")
+
+    fun isStop(text: String): Boolean {
+        val t = text.trim().trimEnd('.', '!', '।')
+        return stop.matches(t) || t in localStops
+    }
 
     /** Splits "open maps and then go home" into at most five steps. */
     fun steps(text: String): List<String> = text.split(splitter).map { it.trim() }.filter { it.isNotEmpty() }.take(5)
@@ -26,6 +31,11 @@ object CommandRouter {
         find("(?:turn )?(?:the )?(?:flash ?light|torch) (on|off)")?.let { return "flashlight" to mapOf("on" to (it[1].lowercase() == "on")) }
         find("turn (on|off) (?:the )?(?:flash ?light|torch)")?.let { return "flashlight" to mapOf("on" to (it[1].lowercase() == "on")) }
         find("(?:turn )?(?:the )?volume (up|down)")?.let { return "volume" to mapOf("direction" to it[1].lowercase()) }
+        find("(?:turn |switch )?(?:the )?(wi-?fi|wi fi|bluetooth) (on|off)")?.let { return toggle(it[1], it[2]) }
+        find("(?:turn|switch) (on|off) (?:the )?(wi-?fi|wi fi|bluetooth)")?.let { return toggle(it[2], it[1]) }
+        find("(?:turn |switch )?(?:the )?do not disturb (on|off)")?.let { return "do_not_disturb" to mapOf("on" to (it[1].lowercase() == "on")) }
+        find("(?:turn|switch) (on|off) (?:the )?do not disturb")?.let { return "do_not_disturb" to mapOf("on" to (it[1].lowercase() == "on")) }
+        find("(?:set )?(?:the )?brightness (?:to |at )?(\\d{1,3})(?: ?%| percent)?")?.let { return "brightness" to mapOf("percent" to it[1].toLong()) }
         find("(?:read|show)(?: me)?(?: my| the)? notifications?")?.let { return "read_notifications" to emptyMap() }
         find("(?:set )?(?:a |an )?timer (?:for )?(\\d{1,4}) (second|seconds|minute|minutes|hour|hours)")?.let {
             val unit = when (it[2].lowercase().first()) { 's' -> 1L; 'm' -> 60L; else -> 3600L }
@@ -46,6 +56,11 @@ object CommandRouter {
             return "send_whatsapp" to mapOf("to" to it[1], "body" to it[2])
         }
         return null
+    }
+
+    private fun toggle(device: String, state: String): Pair<String, Map<String, Any?>> {
+        val tool = if (device.lowercase() == "bluetooth") "bluetooth" else "wifi"
+        return tool to mapOf("on" to (state.lowercase() == "on"))
     }
 
     private fun to24(hour: Long, meridiem: String): Long? {

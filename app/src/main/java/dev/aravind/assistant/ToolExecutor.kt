@@ -2,7 +2,9 @@ package dev.aravind.assistant
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityService
+import android.app.NotificationManager
 import android.app.SearchManager
+import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,8 +12,10 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.provider.AlarmClock
 import android.provider.ContactsContract
+import android.provider.Settings
 import android.telephony.SmsManager
 import dev.aravind.assistant.policy.BlockedApps
 import dev.aravind.assistant.policy.PhoneTarget
@@ -29,6 +33,10 @@ class ToolExecutor(private val context: Context) {
         Tool.SET_TIMER -> setTimer(call.long("seconds").toInt())
         Tool.FLASHLIGHT -> flashlight(call.bool("on"))
         Tool.VOLUME -> volume(call.text("direction") == "up")
+        Tool.BRIGHTNESS -> brightness(call.long("percent").toInt())
+        Tool.WIFI -> wifi(call.bool("on"))
+        Tool.BLUETOOTH -> bluetooth(call.bool("on"))
+        Tool.DO_NOT_DISTURB -> doNotDisturb(call.bool("on"))
         Tool.LOCK_PHONE -> global(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN, "Locked")
         Tool.WEB_SEARCH -> webSearch(call.text("query"))
         Tool.GO_BACK -> global(AccessibilityService.GLOBAL_ACTION_BACK, "Done")
@@ -97,6 +105,55 @@ class ToolExecutor(private val context: Context) {
         val direction = if (up) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
         repeat(2) { audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI) }
         return "Volume ${if (up) "up" else "down"}"
+    }
+
+    private fun brightness(percent: Int): String {
+        if (!Settings.System.canWrite(context)) return "Allow Modify system settings in Control Center first"
+        val resolver = context.contentResolver
+        Settings.System.putInt(resolver, Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
+        Settings.System.putInt(resolver, Settings.System.SCREEN_BRIGHTNESS, (percent * 255 / 100).coerceAtLeast(1))
+        return "Brightness set to $percent percent"
+    }
+
+    private fun doNotDisturb(on: Boolean): String {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        if (!manager.isNotificationPolicyAccessGranted) return "Allow Do Not Disturb access in Control Center first"
+        manager.setInterruptionFilter(
+            if (on) NotificationManager.INTERRUPTION_FILTER_PRIORITY else NotificationManager.INTERRUPTION_FILTER_ALL,
+        )
+        return "Do Not Disturb ${if (on) "on" else "off"}"
+    }
+
+    /** Android 13 lets apps open these switches, not flip them directly, so the screen is used. */
+    private suspend fun flipFromSettings(
+        name: String,
+        on: Boolean,
+        intent: Intent,
+        isOn: () -> Boolean,
+    ): String {
+        if (isOn() == on) return "$name is already ${if (on) "on" else "off"}"
+        val service = AutomationService.instance
+        launch(intent)
+        if (service == null) return "I opened $name settings. Please tap the switch"
+        repeat(12) {
+            delay(250)
+            if (service.flipFirstSystemSwitch(on)) {
+                delay(1500)
+                service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                return if (isOn() == on) "$name ${if (on) "on" else "off"}" else "I tried, but please check $name"
+            }
+        }
+        return "I opened $name settings. Please tap the switch"
+    }
+
+    private suspend fun wifi(on: Boolean): String {
+        val wifi = context.getSystemService(WifiManager::class.java)
+        return flipFromSettings("Wi-Fi", on, Intent(Settings.Panel.ACTION_WIFI)) { wifi.isWifiEnabled }
+    }
+
+    private suspend fun bluetooth(on: Boolean): String {
+        val adapter = context.getSystemService(BluetoothManager::class.java).adapter ?: return "This phone has no Bluetooth"
+        return flipFromSettings("Bluetooth", on, Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) { adapter.isEnabled }
     }
 
     private fun webSearch(query: String): String {

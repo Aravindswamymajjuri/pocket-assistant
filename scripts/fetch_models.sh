@@ -3,6 +3,8 @@
 set -euo pipefail
 
 SHERPA_VERSION=1.13.8
+WHISPER_CPP_TAG=v1.9.5
+WHISPER_CPP_COMMIT=d1be6fde11ac6e0407606b4e42fe72d34add8037
 BASE=https://github.com/k2-fsa/sherpa-onnx/releases/download
 WORK="${RUNNER_TEMP:-/tmp}/voice-models"
 OUT=app/src/main/assets/models
@@ -12,7 +14,12 @@ WAKE_PHRASES=${WAKE_PHRASES:-"HEY ASSISTANT"}
 
 mkdir -p "$WORK" app/libs
 rm -rf "$OUT"
-mkdir -p "$OUT"/kws "$OUT"/vad "$OUT"/whisper "$OUT"/piper "$OUT"/speaker
+mkdir -p "$OUT"/kws "$OUT"/vad "$OUT"/whisper "$OUT"/piper "$OUT"/piper-hi "$OUT"/speaker
+
+if [ ! -d app/src/main/cpp/whisper.cpp ]; then
+  git clone --quiet --depth 1 -b "$WHISPER_CPP_TAG" https://github.com/ggml-org/whisper.cpp app/src/main/cpp/whisper.cpp
+fi
+[ "$(git -C app/src/main/cpp/whisper.cpp rev-parse HEAD)" = "$WHISPER_CPP_COMMIT" ]
 
 get() {
   local url=$1 name
@@ -23,17 +30,19 @@ get() {
 get "$BASE/v$SHERPA_VERSION/sherpa-onnx-$SHERPA_VERSION.aar"
 get "$BASE/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
 get "$BASE/asr-models/silero_vad.onnx"
-get "$BASE/asr-models/sherpa-onnx-whisper-tiny.en.tar.bz2"
+get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
 get "$BASE/tts-models/vits-piper-en_US-lessac-medium.tar.bz2"
+get "$BASE/tts-models/vits-piper-hi_IN-pratham-medium.tar.bz2"
 get "$BASE/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
 
 echo "--- SHA-256 of downloads"
-(cd "$WORK" && sha256sum *.aar *.tar.bz2 *.onnx | sort -k2) | tee "$WORK/actual.sha256"
-if [ -s "$HASHES" ]; then
-  diff "$HASHES" "$WORK/actual.sha256"
+(cd "$WORK" && sha256sum *.aar *.tar.bz2 *.onnx *.bin | sort -k2) | tee "$WORK/actual.sha256"
+if diff "$HASHES" "$WORK/actual.sha256"; then
   echo "All download hashes match the pinned list"
 else
-  echo "::warning::scripts/models.sha256 is empty, so downloads were not pinned"
+  echo "::warning::Download list differs from scripts/models.sha256"
+  # A pinned file that changed always fails. A new file is allowed only until it is pinned.
+  (cd "$WORK" && sha256sum --check --ignore-missing "$OLDPWD/$HASHES")
 fi
 
 cp "$WORK/sherpa-onnx-$SHERPA_VERSION.aar" app/libs/
@@ -51,20 +60,36 @@ done <<< "$WAKE_PHRASES"
 sherpa-onnx-cli text2token --tokens "$K/tokens.txt" --tokens-type bpe --bpe-model "$K/bpe.model" \
   "$WORK/keywords_raw.txt" "$OUT/kws/keywords.txt"
 echo "--- wake keywords"; cat "$OUT/kws/keywords.txt"
+# Lets the app turn a name you type into wake-word tokens, with no network access.
+python3 - "$K/bpe.model" "$OUT/kws/bpe.vocab" <<'PY'
+import sentencepiece, sys
+sp = sentencepiece.SentencePieceProcessor(model_file=sys.argv[1])
+with open(sys.argv[2], "w", encoding="utf-8") as out:
+    for i in range(sp.get_piece_size()):
+        out.write(f"{sp.id_to_piece(i)}\t{sp.get_score(i)}\n")
+PY
+python3 - "$K/bpe.model" "$OUT/kws/bpe_fixture.txt" <<'PY'
+import sentencepiece, sys
+sp = sentencepiece.SentencePieceProcessor(model_file=sys.argv[1])
+with open(sys.argv[2], "w", encoding="utf-8") as out:
+    for phrase in ["HEY ASSISTANT", "HEY NOVA", "HEY MITRA", "HEY JARVIS", "HEY ARAVIND", "HEY SITA RAM"]:
+        out.write(phrase + "\t" + " ".join(sp.encode(phrase, out_type=str)) + "\n")
+PY
 
 cp "$WORK/silero_vad.onnx" "$OUT/vad/silero_vad.onnx"
 
-tar -xjf "$WORK/sherpa-onnx-whisper-tiny.en.tar.bz2" -C "$WORK"
-W="$WORK/sherpa-onnx-whisper-tiny.en"
-cp "$W/tiny.en-encoder.int8.onnx" "$OUT/whisper/encoder.onnx"
-cp "$W/tiny.en-decoder.int8.onnx" "$OUT/whisper/decoder.onnx"
-cp "$W/tiny.en-tokens.txt" "$OUT/whisper/tokens.txt"
+cp "$WORK/ggml-base-q5_1.bin" "$OUT/whisper/ggml-base-q5_1.bin"
 
 tar -xjf "$WORK/vits-piper-en_US-lessac-medium.tar.bz2" -C "$WORK"
 P="$WORK/vits-piper-en_US-lessac-medium"
 cp "$P/en_US-lessac-medium.onnx" "$OUT/piper/model.onnx"
 cp "$P/tokens.txt" "$OUT/piper/tokens.txt"
 cp -r "$P/espeak-ng-data" "$OUT/piper/espeak-ng-data"
+
+tar -xjf "$WORK/vits-piper-hi_IN-pratham-medium.tar.bz2" -C "$WORK"
+H="$WORK/vits-piper-hi_IN-pratham-medium"
+cp "$H/hi_IN-pratham-medium.onnx" "$OUT/piper-hi/model.onnx"
+cp "$H/tokens.txt" "$OUT/piper-hi/tokens.txt"
 
 cp "$WORK/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx" "$OUT/speaker/model.onnx"
 du -sh "$OUT"/* app/libs/*

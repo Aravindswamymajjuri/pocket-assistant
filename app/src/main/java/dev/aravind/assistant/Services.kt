@@ -15,18 +15,25 @@ import android.service.notification.StatusBarNotification
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import dev.aravind.assistant.policy.BlockedApps
+import dev.aravind.assistant.policy.Script
+import dev.aravind.assistant.policy.ScriptDetect
 import dev.aravind.assistant.policy.SecretRedactor
+import dev.aravind.assistant.policy.WakeName
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 
 /** Runs the voice loop. Android shows its mic indicator whenever the microphone is open. */
@@ -97,7 +104,7 @@ class AssistantService : Service() {
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_assistant)
             .setContentTitle("Pocket Assistant is on")
-            .setContentText("Say Hey Assistant, or tap Talk")
+            .setContentText("Say ${WakeName.phrase(Features.wakeName(this)).lowercase()}, or tap Talk")
             .setContentIntent(open)
             .setOngoing(true)
             .addAction(action(ACTION_LISTEN, "Talk"))
@@ -105,16 +112,60 @@ class AssistantService : Service() {
             .build()
     }
 
+    /** Piper speaks English and Hindi. Telugu uses Android's voice, because no Piper voice is available. */
     private suspend fun speak(text: String) {
         AssistantRuntime.say("Assistant: $text")
-        val spoken = output?.say(text) == true
-        if (!spoken) fallback?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "reply")
+        val script = ScriptDetect.of(text)
+        val spoken = when (script) {
+            Script.TELUGU -> false
+            Script.DEVANAGARI -> output?.say(text, useHindi = true) == true
+            Script.LATIN -> output?.say(text, useHindi = false) == true
+        }
+        if (!spoken) {
+            val locale = when (script) {
+                Script.TELUGU -> Locale("te", "IN")
+                Script.DEVANAGARI -> Locale("hi", "IN")
+                Script.LATIN -> Locale("en", "IN")
+            }
+            systemSay(text, locale)
+        }
     }
 
+    private suspend fun systemSay(text: String, locale: Locale) {
+        val voice = fallback ?: return
+        if (voice.isLanguageAvailable(locale) < TextToSpeech.LANG_AVAILABLE) {
+            AssistantRuntime.say("Install the ${locale.displayLanguage} voice in Android text-to-speech settings")
+            return
+        }
+        voice.language = locale
+        val done = CompletableDeferred<Unit>()
+        voice.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) = Unit
+            override fun onDone(utteranceId: String?) {
+                done.complete(Unit)
+            }
+
+            @Deprecated("Required by the Android API")
+            override fun onError(utteranceId: String?) {
+                done.complete(Unit)
+            }
+        })
+        loop?.speaking = true
+        voice.speak(text, TextToSpeech.QUEUE_FLUSH, null, "reply")
+        withTimeoutOrNull(30_000) { done.await() }
+        delay(250)
+        loop?.speaking = false
+    }
+
+    /** Spoken codes are English digits, so they're always read in English. */
     private suspend fun hear(): Heard? {
         val active = loop ?: return null
         val samples = active.capture(9_000) ?: return null
-        return withContext(Dispatchers.Default) { active.understand(samples) }
+        return withContext(Dispatchers.Default) { active.understand(samples, "en") }
+    }
+
+    fun onWakeNameChanged() {
+        loop?.reloadWakeName()
     }
 
     /** Records five phrases and saves only the resulting voiceprint. */
@@ -149,7 +200,7 @@ class AssistantService : Service() {
         if (callJob?.isActive == true) return
         val active = loop ?: return
         callJob = scope.launch {
-            val session = CallSession(this@AssistantService, ::speak, { active.capture(it) }, { active.understand(it) })
+            val session = CallSession(this@AssistantService, ::speak, { active.capture(it) }, { active.understand(it, "auto") })
             session.run(number)
         }
     }
@@ -162,6 +213,7 @@ class AssistantService : Service() {
         fallback = null
         GemmaEngine.unload()
         GemmaEngine.clearHistory()
+        WhisperCpp.release()
         super.onDestroy()
     }
 
@@ -238,6 +290,18 @@ class AutomationService : AccessibilityService() {
         return target.performAction(action)
     }
 
+    /**
+     * The one narrow exception to the Settings block. It's reachable only from the approved
+     * Wi-Fi and Bluetooth tools, and it only touches the first switch on that page.
+     */
+    fun flipFirstSystemSwitch(on: Boolean): Boolean {
+        val root = rootInActiveWindow ?: return false
+        if (root.packageName?.toString() !in SETTINGS_PACKAGES) return false
+        val toggle = search(root) { it.isCheckable && it.className?.toString().orEmpty().contains("Switch") } ?: return false
+        if (toggle.isChecked == on) return true
+        return click(toggle)
+    }
+
     /** Works only inside WhatsApp, and only after the message was approved. */
     fun tapSendInWhatsApp(): Boolean {
         val root = rootInActiveWindow ?: return false
@@ -254,6 +318,10 @@ class AutomationService : AccessibilityService() {
 
         @Volatile
         var foregroundPackage: String? = null
+
+        private val SETTINGS_PACKAGES = setOf(
+            "com.android.settings", "com.oplus.wirelesssettings", "com.coloros.wirelesssettings", "com.android.settings.intelligence",
+        )
     }
 }
 

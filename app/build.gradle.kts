@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.google.devtools.ksp")
 }
 android {
     namespace = "dev.aravind.assistant"
@@ -10,10 +11,14 @@ android {
         applicationId = "dev.aravind.assistant"
         minSdk = 33
         targetSdk = 33
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
         ndk { abiFilters += "arm64-v8a" }
+        externalNativeBuild {
+            cmake { arguments += listOf("-DCMAKE_BUILD_TYPE=Release", "-DANDROID_ARM_NEON=ON") }
+        }
     }
+    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt") } }
     signingConfigs {
         create("release") {
             storeFile = file(System.getenv("SIGNING_STORE_FILE") ?: "release.jks")
@@ -56,5 +61,9 @@ dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation(files("libs/sherpa-onnx-1.13.8.aar"))
+    implementation("androidx.room:room-runtime:2.8.4")
+    ksp("androidx.room:room-compiler:2.8.4")
+    implementation("net.zetetic:sqlcipher-android:4.19.0@aar")
+    implementation("androidx.sqlite:sqlite:2.6.2")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
 }

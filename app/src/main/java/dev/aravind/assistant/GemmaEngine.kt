@@ -125,12 +125,14 @@ object GemmaEngine {
     @Volatile
     private var unloadWhenIdle = false
 
-    private fun systemPrompt(): String {
+    private fun systemPrompt(context: Context): String {
         val tools = Tool.entries.joinToString("\n") { tool ->
             "- ${tool.id}(${tool.params.keys.joinToString(", ")}): ${tool.description}"
         }
         return """
-            You are a friendly voice assistant on the user's phone. Reply with one JSON object and no other text.
+            Your name is ${Features.wakeName(context)}. You are a friendly voice assistant on the user's phone.
+            Reply with one JSON object and no other text. Keep the "reply" text in the language the user spoke,
+            including Hindi or Telugu. Tool ids and argument names always stay in English.
             To answer in words, use {"reply":"short spoken answer"}.
             To use one phone tool, use {"tool":"tool_id","args":{"name":"value"}}.
             For several steps in order, use {"plan":[{"tool":"tool_id","args":{}},{"tool":"tool_id","args":{}}]}.
@@ -167,7 +169,7 @@ object GemmaEngine {
         ModelStore.problem(context)?.let { error(it) }
         mutex.withLock {
             val earlier = if (history.isEmpty()) "" else "Earlier in this chat:\n${history.joinToString("\n")}\n\n"
-            val answer = complete(context, "${systemPrompt()}\n\n${earlier}User said: $text")
+            val answer = complete(context, "${systemPrompt(context)}\n\n${earlier}User said: $text")
             history.addLast("User: ${text.take(200)}")
             history.addLast("Assistant: ${answer.take(200)}")
             while (history.size > 6) history.removeFirst()

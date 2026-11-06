@@ -8,11 +8,11 @@ import android.os.BatteryManager
 import android.os.PowerManager
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.util.Base64
 import dev.aravind.assistant.policy.AuditChain
 import dev.aravind.assistant.policy.Category
 import dev.aravind.assistant.policy.ConfirmationAuthority
 import dev.aravind.assistant.policy.OutboundRateLimiter
+import dev.aravind.assistant.policy.WakeName
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
@@ -109,6 +109,13 @@ object Features {
     fun setWakeWord(context: Context, value: Boolean) = prefs(context).edit().putBoolean("wake", value).apply()
     fun aiCalls(context: Context) = prefs(context).getBoolean("calls", false)
     fun setAiCalls(context: Context, value: Boolean) = prefs(context).edit().putBoolean("calls", value).apply()
+    fun wakeName(context: Context): String = prefs(context).getString("name", null) ?: WakeName.DEFAULT
+    fun setWakeName(context: Context, value: String) = prefs(context).edit().putString("name", value.trim()).apply()
+
+    /** The Whisper language code: en, hi, te, or auto. */
+    fun language(context: Context): String = prefs(context).getString("language", null) ?: "en"
+    fun setLanguage(context: Context, value: String) = prefs(context).edit().putString("language", value).apply()
+
     fun autoPause(context: Context) = prefs(context).getBoolean("auto_pause", true)
     fun setAutoPause(context: Context, value: Boolean) = prefs(context).edit().putBoolean("auto_pause", value).apply()
 }
@@ -176,41 +183,28 @@ object Keys {
     }
 }
 
-/** Metadata only: never message text, contact names, or audio. Each line is encrypted and chained. */
+/** Metadata only: never message text, contact names, or audio. Entries are chained to reveal edits. */
 object Audit {
     private val lock = Any()
-
-    private fun file(context: Context) = File(context.noBackupFilesDir, "audit.log")
 
     fun log(context: Context, event: String) {
         synchronized(lock) {
             runCatching {
                 val key = Keys.derivedSecret(context, "audit")
-                val entries = read(context)
-                val previous = entries.lastOrNull()?.second ?: AuditChain.GENESIS
+                val dao = Db.get(context).audit()
+                val previous = dao.last()?.mac ?: AuditChain.GENESIS
                 val entry = "${System.currentTimeMillis()} $event"
-                val mac = AuditChain.link(key, previous, entry)
-                val blob = Keys.encrypt("$entry\n$mac".toByteArray())
-                file(context).appendText(Base64.encodeToString(blob, Base64.NO_WRAP) + "\n")
+                dao.insert(AuditRow(entry = entry, mac = AuditChain.link(key, previous, entry)))
             }
-        }
-    }
-
-    private fun read(context: Context): List<Pair<String, String>> {
-        val f = file(context)
-        if (!f.exists()) return emptyList()
-        return f.readLines().filter { it.isNotBlank() }.map { line ->
-            val text = String(Keys.decrypt(Base64.decode(line, Base64.NO_WRAP)))
-            text.substringBefore('\n') to text.substringAfter('\n')
         }
     }
 
     /** Returns the newest entries and whether the chain is intact. */
     fun view(context: Context): Pair<List<String>, Boolean> = synchronized(lock) {
         runCatching {
-            val entries = read(context)
-            val intact = AuditChain.verify(Keys.derivedSecret(context, "audit"), entries)
-            entries.map { it.first }.takeLast(100).reversed() to intact
+            val rows = Db.get(context).audit().all()
+            val intact = AuditChain.verify(Keys.derivedSecret(context, "audit"), rows.map { it.entry to it.mac })
+            rows.map { it.entry }.takeLast(100).reversed() to intact
         }.getOrDefault(emptyList<String>() to false)
     }
 }
@@ -219,6 +213,7 @@ object DataWipe {
     fun deleteEverything(context: Context) {
         AssistantRuntime.stopAll(context, "wipe")
         GemmaEngine.unload()
+        Db.delete(context)
         context.filesDir.deleteRecursively()
         context.noBackupFilesDir.deleteRecursively()
         context.cacheDir.deleteRecursively()

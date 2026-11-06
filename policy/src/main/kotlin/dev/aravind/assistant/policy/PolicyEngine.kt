@@ -80,6 +80,9 @@ object Readback {
         Tool.PLACE_CALL -> "Call ${call.text("to")}"
         Tool.TAP_TEXT -> "Tap \"${call.text("text")}\" on the current screen"
         Tool.READ_NOTIFICATIONS -> "Read your notifications aloud"
+        Tool.WIFI -> "Turn Wi-Fi ${if (call.bool("on")) "on" else "off"}"
+        Tool.BLUETOOTH -> "Turn Bluetooth ${if (call.bool("on")) "on" else "off"}"
+        Tool.DO_NOT_DISTURB -> "Turn Do Not Disturb ${if (call.bool("on")) "on" else "off"}"
         else -> call.tool.description
     }
 }
@@ -275,6 +278,97 @@ object ModelPath {
             p.contains("/Android/data/") || p.contains("/Android/obb/") ->
                 "Android blocks reading another app's private folder. Move the file to Download first"
             else -> null
+        }
+    }
+}
+
+/**
+ * Turns a name you type into wake-word tokens, matching the model's own tokenizer.
+ * It chooses the highest-scoring way to split the text into known pieces.
+ */
+class BpeTokenizer(private val pieces: Map<String, Float>) {
+    private val longest = pieces.keys.maxOfOrNull { it.length } ?: 0
+
+    fun encode(phrase: String): List<String>? {
+        val text = "\u2581" + phrase.trim().uppercase().split(Regex("\\s+")).joinToString("\u2581")
+        val best = FloatArray(text.length + 1) { Float.NEGATIVE_INFINITY }
+        val from = IntArray(text.length + 1) { -1 }
+        best[0] = 0f
+        for (end in 1..text.length) {
+            for (start in maxOf(0, end - longest) until end) {
+                if (best[start] == Float.NEGATIVE_INFINITY) continue
+                val score = pieces[text.substring(start, end)] ?: continue
+                if (best[start] + score > best[end]) {
+                    best[end] = best[start] + score
+                    from[end] = start
+                }
+            }
+        }
+        if (from[text.length] < 0) return null
+        val out = ArrayList<String>()
+        var end = text.length
+        while (end > 0) {
+            out += text.substring(from[end], end)
+            end = from[end]
+        }
+        return out.reversed()
+    }
+
+    companion object {
+        fun parse(lines: Sequence<String>): BpeTokenizer {
+            val map = HashMap<String, Float>()
+            for (line in lines) {
+                val parts = line.split('\t')
+                if (parts.size == 2) parts[1].toFloatOrNull()?.let { map[parts[0]] = it }
+            }
+            return BpeTokenizer(map)
+        }
+    }
+}
+
+object WakeName {
+    const val DEFAULT = "Assistant"
+    private val allowed = Regex("^[A-Za-z]+( [A-Za-z]+)?$")
+
+    /** Returns why a name can't be used, or null if it's fine. */
+    fun problem(name: String): String? {
+        val n = name.trim()
+        return when {
+            !allowed.matches(n) -> "Use English letters only, in one or two words"
+            n.replace(" ", "").length < 3 -> "Use at least 3 letters"
+            n.length > 24 -> "Use at most 24 letters"
+            else -> null
+        }
+    }
+
+    fun phrase(name: String): String = "HEY ${name.trim().uppercase()}"
+
+    /** Builds the keyword line the engine expects, or null if the name can't be tokenized. */
+    fun keywordLine(tokenizer: BpeTokenizer, name: String): String? {
+        val tokens = tokenizer.encode(phrase(name)) ?: return null
+        return "${tokens.joinToString(" ")} :2.0 #0.3 @${phrase(name).replace(' ', '_')}"
+    }
+}
+
+enum class Script { LATIN, DEVANAGARI, TELUGU }
+
+object ScriptDetect {
+    /** Picks the reply voice from the letters used in the text. */
+    fun of(text: String): Script {
+        var hindi = 0
+        var telugu = 0
+        var latin = 0
+        for (c in text) {
+            when (c) {
+                in '\u0900'..'\u097F' -> hindi++
+                in '\u0C00'..'\u0C7F' -> telugu++
+                in 'A'..'Z', in 'a'..'z' -> latin++
+            }
+        }
+        return when {
+            telugu > 0 && telugu >= hindi && telugu >= latin -> Script.TELUGU
+            hindi > 0 && hindi >= latin -> Script.DEVANAGARI
+            else -> Script.LATIN
         }
     }
 }

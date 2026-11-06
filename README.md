@@ -2,7 +2,7 @@
 
 A private, offline-first voice assistant for a Realme 7 Pro on Android 13. Gemma proposes actions, and a separate Kotlin policy engine decides whether they run.
 
-## Current status: v0.2
+## Current status: v0.3
 
 Built on GitHub with Java 21. Only the features you test on your phone should be treated as working.
 
@@ -10,17 +10,21 @@ Included:
 - Policy engine, risk levels, secret redaction, rate limits, and one-time approvals
 - Master switch, pause timers, Quick Settings stop tile, notification Stop button, and Lockdown
 - Control Center for tools, permissions, battery, model, voice, calls, and security warnings
-- Encrypted, tamper-evident audit log and full data wipe
-- Wake word "Hey Assistant", Silero VAD, Whisper tiny.en, Piper voice, and Voice ID through sherpa-onnx
+- Room database encrypted with SQLCipher, tamper-evident audit log, and full data wipe
+- A wake word using a name you set in the app, Silero VAD, and Voice ID through sherpa-onnx
+- whisper.cpp speech-to-text in English, Hindi, Telugu, or auto-detect
+- Piper voices for English and Hindi, and Android's voice for Telugu
 - Gemma through LiteRT-LM from a typed path, a picked file, or a private copy
-- Apps, alarms, timers, flashlight, volume, lock, search, back, home, scroll, tap
+- Apps, alarms, timers, flashlight, volume, brightness, Wi-Fi, Bluetooth, Do Not Disturb, lock, search, back, home, scroll, tap
 - Notifications, SMS, WhatsApp, calls, and Gemma multi-step plans
 - Experimental speakerphone AI call answering for allowed numbers only
 
 Known limits:
 - Voice ID can be fooled by recordings and cloned voices, so spoken codes and fingerprint fallback stay on
 - AI calling depends on this phone letting the app use the mic during a call
-- Whisper tiny.en understands English only
+- Whisper base is less accurate for Telugu and Hindi than for English, and slower than tiny
+- Wake names must use English letters, because the wake-word model is English
+- Wi-Fi and Bluetooth use the settings screen, because Android 13 blocks direct switching
 - There is no allow-list of apps yet, only a block list
 
 ## Build
