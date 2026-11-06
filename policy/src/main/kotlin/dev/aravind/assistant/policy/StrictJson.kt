@@ -1,0 +1,174 @@
+package dev.aravind.assistant.policy
+
+class JsonRejected(message: String) : Exception(message)
+
+/** Small strict JSON parser. It rejects duplicates, trailing text, deep nesting, and fractions. */
+object StrictJson {
+    private const val MAX_LENGTH = 4_000
+    private const val MAX_DEPTH = 8
+
+    fun parse(text: String): Any? {
+        if (text.length > MAX_LENGTH) throw JsonRejected("too long")
+        val reader = Reader(text)
+        reader.skipSpace()
+        val value = reader.value(0)
+        reader.skipSpace()
+        if (!reader.atEnd()) throw JsonRejected("trailing text")
+        return value
+    }
+
+    private class Reader(private val s: String) {
+        private var i = 0
+
+        fun atEnd() = i >= s.length
+
+        fun skipSpace() {
+            while (i < s.length && s[i] in " \t\r\n") i++
+        }
+
+        private fun peek(): Char = if (i < s.length) s[i] else throw JsonRejected("unexpected end")
+
+        private fun expect(c: Char) {
+            if (peek() != c) throw JsonRejected("expected $c")
+            i++
+        }
+
+        fun value(depth: Int): Any? {
+            if (depth > MAX_DEPTH) throw JsonRejected("too deep")
+            return when (peek()) {
+                '{' -> obj(depth)
+                '[' -> arr(depth)
+                '"' -> str()
+                't' -> word("true", true)
+                'f' -> word("false", false)
+                'n' -> word("null", null)
+                else -> num()
+            }
+        }
+
+        private fun word(w: String, v: Any?): Any? {
+            if (!s.startsWith(w, i)) throw JsonRejected("bad literal")
+            i += w.length
+            return v
+        }
+
+        private fun num(): Long {
+            val start = i
+            if (peek() == '-') i++
+            while (i < s.length && s[i].isDigit()) i++
+            return s.substring(start, i).toLongOrNull() ?: throw JsonRejected("bad number")
+        }
+
+        private fun str(): String {
+            expect('"')
+            val out = StringBuilder()
+            while (true) {
+                val c = peek()
+                i++
+                when {
+                    c == '"' -> return out.toString()
+                    c == '\\' -> {
+                        val e = peek()
+                        i++
+                        when (e) {
+                            '"', '\\', '/' -> out.append(e)
+                            'n' -> out.append('\n')
+                            't' -> out.append('\t')
+                            'r' -> out.append('\r')
+                            'u' -> {
+                                if (i + 4 > s.length) throw JsonRejected("bad escape")
+                                val code = s.substring(i, i + 4).toIntOrNull(16) ?: throw JsonRejected("bad escape")
+                                out.append(code.toChar())
+                                i += 4
+                            }
+                            else -> throw JsonRejected("bad escape")
+                        }
+                    }
+                    c < ' ' -> throw JsonRejected("control character")
+                    else -> out.append(c)
+                }
+            }
+        }
+
+        private fun arr(depth: Int): List<Any?> {
+            expect('[')
+            val out = ArrayList<Any?>()
+            skipSpace()
+            if (peek() == ']') {
+                i++
+                return out
+            }
+            while (true) {
+                skipSpace()
+                out.add(value(depth + 1))
+                skipSpace()
+                if (peek() == ',') {
+                    i++
+                    continue
+                }
+                expect(']')
+                return out
+            }
+        }
+
+        private fun obj(depth: Int): Map<String, Any?> {
+            expect('{')
+            val out = LinkedHashMap<String, Any?>()
+            skipSpace()
+            if (peek() == '}') {
+                i++
+                return out
+            }
+            while (true) {
+                skipSpace()
+                val key = str()
+                if (key in out) throw JsonRejected("duplicate key")
+                skipSpace()
+                expect(':')
+                skipSpace()
+                out[key] = value(depth + 1)
+                skipSpace()
+                if (peek() == ',') {
+                    i++
+                    continue
+                }
+                expect('}')
+                return out
+            }
+        }
+    }
+}
+
+sealed interface ModelOutput {
+    data class Reply(val text: String) : ModelOutput
+    data class Call(val call: ToolCall) : ModelOutput
+    data class Invalid(val reason: String) : ModelOutput
+}
+
+/** The model must output {"reply":"..."} or {"tool":"...","args":{...}}. Anything else is rejected. */
+object ModelOutputParser {
+    fun parse(raw: String): ModelOutput {
+        val text = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        val root = try {
+            StrictJson.parse(text)
+        } catch (e: JsonRejected) {
+            return ModelOutput.Invalid(e.message ?: "invalid JSON")
+        }
+        @Suppress("UNCHECKED_CAST")
+        val obj = root as? Map<String, Any?> ?: return ModelOutput.Invalid("not an object")
+        if (obj.keys == setOf("reply")) {
+            val reply = obj["reply"] as? String ?: return ModelOutput.Invalid("reply must be text")
+            return ModelOutput.Reply(reply)
+        }
+        if (!setOf("tool", "args").containsAll(obj.keys) || "tool" !in obj) return ModelOutput.Invalid("unexpected keys")
+        val args = when (val a = obj["args"]) {
+            null -> emptyMap()
+            is Map<*, *> -> a.entries.associate { it.key as String to it.value }
+            else -> return ModelOutput.Invalid("args must be an object")
+        }
+        return when (val v = ToolValidator.validate(obj["tool"] as? String, args)) {
+            is Validated.Ok -> ModelOutput.Call(v.call)
+            is Validated.Rejected -> ModelOutput.Invalid(v.reason)
+        }
+    }
+}
