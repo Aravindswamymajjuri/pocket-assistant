@@ -251,7 +251,7 @@ class VoiceLoop(private val engines: VoiceEngines, private val onCommand: (Heard
                 }
                 val line = mic ?: open().also { mic = it }
                 if (line == null) {
-                    Runtime.setStatus("Microphone unavailable")
+                    Runtime.updateStatus("Microphone unavailable")
                     Thread.sleep(1000)
                     continue
                 }
@@ -263,7 +263,7 @@ class VoiceLoop(private val engines: VoiceEngines, private val onCommand: (Heard
                 if (collector == null && (wantCapture || wantListen)) {
                     listenRequested.set(false)
                     collector = Collector(engines.newVad())
-                    Runtime.setStatus("Listening")
+                    Runtime.updateStatus("Listening")
                 }
                 val active = collector
                 if (active != null) {
@@ -308,11 +308,11 @@ class VoiceLoop(private val engines: VoiceEngines, private val onCommand: (Heard
             return
         }
         if (samples == null) {
-            Runtime.setStatus("Ready")
+            Runtime.updateStatus("Ready")
             return
         }
         busy = true
-        Runtime.setStatus("Working")
+        Runtime.updateStatus("Working")
         Thread {
             try {
                 val heard = understand(samples)
@@ -321,7 +321,7 @@ class VoiceLoop(private val engines: VoiceEngines, private val onCommand: (Heard
                 Audit.log("speech_failed:${e.javaClass.simpleName}")
             } finally {
                 busy = false
-                if (Runtime.armed) Runtime.setStatus("Ready")
+                if (Runtime.armed) Runtime.updateStatus("Ready")
             }
         }.also { it.isDaemon = true }.start()
     }
@@ -518,7 +518,7 @@ class AssistantCore {
     fun start() {
         val agent = Agent(output::say) { hear() }
         loop = VoiceLoop(engines) { agent.handle(it) }.also { it.start() }
-        Runtime.setStatus("Ready")
+        Runtime.updateStatus("Ready")
     }
 
     private fun hear(): Heard? {

@@ -246,7 +246,7 @@ object Runtime {
         onChange()
     }
 
-    fun setStatus(value: String) {
+    fun updateStatus(value: String) {
         status = value
         onChange()
     }

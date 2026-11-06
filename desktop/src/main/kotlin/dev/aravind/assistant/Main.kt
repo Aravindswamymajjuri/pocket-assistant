@@ -138,7 +138,7 @@ private class Ui {
                 background {
                     if (Auth.verify("Turn on Pocket Assistant")) runCatching { Runtime.arm() }.onFailure { error ->
                         Audit.log("start_failed:${error.javaClass.simpleName}")
-                        Runtime.setStatus("Failed to start")
+                        Runtime.updateStatus("Failed to start")
                     }
                 }
             }
