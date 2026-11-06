@@ -139,9 +139,12 @@ private fun AppTheme(content: @Composable () -> Unit) {
     }
 }
 
-private val runtimePermissions = listOf(
+/** Android 12 lets apps post notifications without this permission. */
+private val notificationPermission =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) listOf("Notifications" to Manifest.permission.POST_NOTIFICATIONS) else emptyList()
+
+private val runtimePermissions = notificationPermission + listOf(
     "Microphone" to Manifest.permission.RECORD_AUDIO,
-    "Notifications" to Manifest.permission.POST_NOTIFICATIONS,
     "Contacts" to Manifest.permission.READ_CONTACTS,
     "Phone calls" to Manifest.permission.CALL_PHONE,
     "SMS" to Manifest.permission.SEND_SMS,
@@ -282,10 +285,15 @@ private fun HomeScreen(activity: FragmentActivity) {
         Text("Android permissions", style = MaterialTheme.typography.titleSmall)
         runtimePermissions.forEach { (label, permission) ->
             val granted = remember(refreshKey) { activity.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED }
-            StateRow(label, if (granted) "On" else "Off", if (granted) "Revoke" else "Allow") {
+            StateRow(label, if (granted) "On" else "Off", if (granted) "Turn off" else "Allow") {
                 if (granted) {
-                    activity.revokeSelfPermissionOnKill(permission)
-                    message = "$label will turn off when the app closes. Use Lockdown or close it from Recents."
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        activity.revokeSelfPermissionOnKill(permission)
+                        message = "$label will turn off when the app closes. Use Lockdown or close it from Recents."
+                    } else {
+                        openAppInfo(activity)
+                        message = "Android 12 can't remove this from inside the app. Open Permissions and turn off $label."
+                    }
                 } else {
                     permissionLauncher.launch(permission)
                 }
@@ -506,8 +514,13 @@ private fun HomeScreen(activity: FragmentActivity) {
                 Features.setAiCalls(activity, false)
                 AutomationService.instance?.disableSelf()
                 NotificationsService.instance?.requestUnbind()
-                activity.revokeSelfPermissionsOnKill(runtimePermissions.map { it.second })
-                message = "Lockdown on. Runtime permissions turn off when the app closes. Remove notification and battery access in Android Settings."
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    activity.revokeSelfPermissionsOnKill(runtimePermissions.map { it.second })
+                    message = "Lockdown on. Runtime permissions turn off when the app closes. Remove notification and battery access in Android Settings."
+                } else {
+                    openAppInfo(activity)
+                    message = "Lockdown on. The assistant and all tools are off. Android 12 needs you to remove permissions here in App info."
+                }
                 refresh++
             },
             Modifier.fillMaxWidth(),
@@ -532,6 +545,10 @@ private fun HomeScreen(activity: FragmentActivity) {
             Modifier.fillMaxWidth(),
         ) { Text("Delete all assistant data") }
     }
+}
+
+private fun openAppInfo(activity: FragmentActivity) {
+    activity.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", activity.packageName, null)))
 }
 
 private fun securityWarnings(activity: FragmentActivity): List<String> {

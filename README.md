@@ -1,6 +1,6 @@
 # Pocket Assistant
 
-A private, offline-first voice assistant for a Realme 7 Pro on Android 13. Gemma proposes actions, and a separate Kotlin policy engine decides whether they run.
+A private, offline-first voice assistant for a Realme 7 Pro on Android 12 or later. Gemma proposes actions, and a separate Kotlin policy engine decides whether they run.
 
 ## Current status: v0.3
 
@@ -24,7 +24,7 @@ Known limits:
 - AI calling depends on this phone letting the app use the mic during a call
 - Whisper base is less accurate for Telugu and Hindi than for English, and slower than tiny
 - Wake names must use English letters, because the wake-word model is English
-- Wi-Fi and Bluetooth use the settings screen, because Android 13 blocks direct switching
+- Wi-Fi and Bluetooth use the settings screen, because Android blocks direct switching for this app
 - There is no allow-list of apps yet, only a block list
 
 ## Windows laptop version
@@ -49,8 +49,8 @@ Without them, each build uses a throwaway key and the previous version must be u
 
 ## Set up on the phone
 
-1. Install the APK. Android 13 will block its accessibility and notification access at first.
-2. Try to enable the service, then go to App info → ⋮ → Allow restricted settings.
+1. Install the APK.
+2. On Android 13 or later, try to enable the Accessibility Service, then go to App info → ⋮ → Allow restricted settings. Android 12 doesn't need this.
 3. Open the app and turn on only the tools you want.
 4. In Control Center, enter the Gemma `.litertlm` path or tap Browse, then tap Test model. A file in Download needs All files access.
 5. Turn on the assistant with your fingerprint. You must do this again after every restart.

@@ -13,6 +13,7 @@ import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.provider.AlarmClock
 import android.provider.ContactsContract
 import android.provider.Settings
@@ -56,7 +57,12 @@ class ToolExecutor(private val context: Context) {
     private fun openApp(name: String): String {
         val pm = context.packageManager
         val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val apps = pm.queryIntentActivities(launcher, PackageManager.ResolveInfoFlags.of(0))
+        val apps = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.queryIntentActivities(launcher, PackageManager.ResolveInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.queryIntentActivities(launcher, 0)
+        }
         val wanted = name.lowercase().removeSuffix(" app").trim()
         val match = apps.firstOrNull { it.loadLabel(pm).toString().equals(wanted, ignoreCase = true) }
             ?: apps.firstOrNull { it.loadLabel(pm).toString().lowercase().startsWith(wanted) }
@@ -124,7 +130,7 @@ class ToolExecutor(private val context: Context) {
         return "Do Not Disturb ${if (on) "on" else "off"}"
     }
 
-    /** Android 13 lets apps open these switches, not flip them directly, so the screen is used. */
+    /** Android lets apps open these switches, not flip them directly, so the screen is used. */
     private suspend fun flipFromSettings(
         name: String,
         on: Boolean,
