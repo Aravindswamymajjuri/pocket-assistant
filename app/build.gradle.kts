@@ -56,6 +56,5 @@ dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation(files("libs/sherpa-onnx-1.13.8.aar"))
-    // Replace with the exact version printed by the first CI build, then keep it pinned.
-    implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
 }
