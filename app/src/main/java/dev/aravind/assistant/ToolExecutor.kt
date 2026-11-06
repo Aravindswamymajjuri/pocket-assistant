@@ -158,12 +158,12 @@ class ToolExecutor(private val context: Context) {
 
     private suspend fun wifi(on: Boolean): String {
         val wifi = context.getSystemService(WifiManager::class.java)
-        return flipFromSettings("Wi-Fi", on, Intent(Settings.Panel.ACTION_WIFI)) { wifi.isWifiEnabled }
+        return flipFromSettings("Wi-Fi", on, Intent(Settings.Panel.ACTION_WIFI), isOn = { wifi.isWifiEnabled })
     }
 
     private suspend fun bluetooth(on: Boolean): String {
         val adapter = context.getSystemService(BluetoothManager::class.java).adapter ?: return "This phone has no Bluetooth"
-        return flipFromSettings("Bluetooth", on, Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) { adapter.isEnabled }
+        return flipFromSettings("Bluetooth", on, Intent(Settings.ACTION_BLUETOOTH_SETTINGS), isOn = { adapter.isEnabled })
     }
 
     private suspend fun mobileData(on: Boolean): String {
