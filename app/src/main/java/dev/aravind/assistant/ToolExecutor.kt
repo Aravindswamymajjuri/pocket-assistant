@@ -2,9 +2,10 @@ package dev.aravind.assistant
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityService
+import android.app.KeyguardManager
 import android.app.NotificationManager
-import android.app.SearchManager
 import android.bluetooth.BluetoothManager
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -22,6 +23,7 @@ import android.telephony.TelephonyManager
 import dev.aravind.assistant.policy.BlockedApps
 import dev.aravind.assistant.policy.ContactMatcher
 import dev.aravind.assistant.policy.PhoneTarget
+import dev.aravind.assistant.policy.QuickSettings
 import dev.aravind.assistant.policy.Tool
 import dev.aravind.assistant.policy.ToolCall
 import kotlinx.coroutines.delay
@@ -40,14 +42,18 @@ class ToolExecutor(private val context: Context) {
         Tool.WIFI -> wifi(call.bool("on"))
         Tool.BLUETOOTH -> bluetooth(call.bool("on"))
         Tool.MOBILE_DATA -> mobileData(call.bool("on"))
+        Tool.QUICK_TOGGLE -> quickToggle(call.text("setting"), call.bool("on"))
+        Tool.RINGER_MODE -> ringer(call.text("mode"))
         Tool.DO_NOT_DISTURB -> doNotDisturb(call.bool("on"))
         Tool.LOCK_PHONE -> global(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN, "Locked")
-        Tool.WEB_SEARCH -> webSearch(call.text("query"))
+        Tool.WEB_SEARCH -> webSearch(call.text("query"), call.args["site"] as? String)
         Tool.GO_BACK -> global(AccessibilityService.GLOBAL_ACTION_BACK, "Done")
         Tool.GO_HOME -> global(AccessibilityService.GLOBAL_ACTION_HOME, "Done")
-        Tool.SCROLL -> automation { if (it.scroll(call.text("direction") == "down")) "Done" else "Nothing to scroll here" }
-        Tool.TAP_TEXT -> automation { if (it.tap(call.text("text"))) "Done" else "I couldn't find that on the screen" }
-        Tool.READ_NOTIFICATIONS -> NotificationsService.spokenSummary()
+        Tool.SCROLL -> automation { if (it.scroll(call.text("direction") == "down")) "Done" else "I can't scroll this screen" }
+        Tool.TAP_TEXT -> automation { if (it.tap(call.text("text"))) "Done" else "I couldn't find ${call.text("text")} on the screen" }
+        Tool.READ_NOTIFICATIONS ->
+            if (context.getSystemService(KeyguardManager::class.java).isKeyguardLocked) "Unlock your phone first, then ask again"
+            else NotificationsService.spokenSummary(context)
         Tool.SEND_SMS -> sendSms(call.text("to"), call.text("body"))
         Tool.SEND_WHATSAPP -> sendWhatsApp(call.text("to"), call.text("body"))
         Tool.PLACE_CALL -> placeCall(call.text("to"))
@@ -87,8 +93,13 @@ class ToolExecutor(private val context: Context) {
             .putExtra(AlarmClock.EXTRA_MINUTES, minute)
             .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
         (call.args["label"] as? String)?.let { intent.putExtra(AlarmClock.EXTRA_MESSAGE, it) }
-        launch(intent)
-        return "Alarm set for %02d:%02d".format(hour, minute)
+        try {
+            launch(intent)
+        } catch (e: ActivityNotFoundException) {
+            return "Your clock app didn't accept the alarm"
+        }
+        val hour12 = if (hour % 12 == 0) 12 else hour % 12
+        return "Alarm set for %d:%02d %s".format(hour12, minute, if (hour < 12) "AM" else "PM")
     }
 
     private fun setTimer(seconds: Int): String {
@@ -161,30 +172,125 @@ class ToolExecutor(private val context: Context) {
         return flipFromSettings("Wi-Fi", on, Intent(Settings.Panel.ACTION_WIFI), isOn = { wifi.isWifiEnabled })
     }
 
+    /** Android 12 still lets this app switch Bluetooth directly. Quick Settings is the backup. */
     private suspend fun bluetooth(on: Boolean): String {
         val adapter = context.getSystemService(BluetoothManager::class.java).adapter ?: return "This phone has no Bluetooth"
-        return flipFromSettings("Bluetooth", on, Intent(Settings.ACTION_BLUETOOTH_SETTINGS), isOn = { adapter.isEnabled })
+        if (adapter.isEnabled == on) return "Bluetooth is already ${onOff(on)}"
+        if (granted(Manifest.permission.BLUETOOTH_CONNECT)) {
+            @Suppress("DEPRECATION", "MissingPermission")
+            val started = runCatching { if (on) adapter.enable() else adapter.disable() }.getOrDefault(false)
+            if (started) {
+                repeat(10) {
+                    delay(300)
+                    if (adapter.isEnabled == on) return "Bluetooth ${onOff(on)}"
+                }
+            }
+        }
+        return quickTile("Bluetooth", listOf("bluetooth"), on, Settings.ACTION_BLUETOOTH_SETTINGS) { adapter.isEnabled }
     }
 
     private suspend fun mobileData(on: Boolean): String {
         val phone = context.getSystemService(TelephonyManager::class.java)
-        return flipFromSettings(
-            "Mobile data", on, Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY),
-            { runCatching { phone.isDataEnabled }.getOrDefault(!on) },
-            { it.flipSwitchNear(listOf("mobile data", "mobile network", "cellular", "sim"), on) },
-        )
+        return quickTile(
+            "Mobile data", listOf("mobile data", "cellular data", "mobile network", "sim data"), on,
+            Settings.ACTION_DATA_USAGE_SETTINGS,
+        ) { runCatching { phone.isDataEnabled }.getOrNull() }
     }
 
-    private fun webSearch(query: String): String {
-        val intent = Intent(Intent.ACTION_WEB_SEARCH).putExtra(SearchManager.QUERY, query)
-        val canHandle = intent.resolveActivity(context.packageManager) != null
-        if (canHandle) {
-            launch(intent)
-        } else {
-            val encoded = URLEncoder.encode(query, "UTF-8")
-            launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=$encoded")))
+    private fun onOff(on: Boolean) = if (on) "on" else "off"
+
+    private data class Mode(val name: String, val labels: List<String>, val settings: String?)
+
+    private val modes = mapOf(
+        QuickSettings.HOTSPOT to Mode("Hotspot", listOf("hotspot", "personal hotspot", "mobile hotspot", "portable hotspot", "wi-fi hotspot"), Settings.ACTION_WIRELESS_SETTINGS),
+        QuickSettings.AIRPLANE to Mode("Airplane mode", listOf("airplane mode", "aeroplane mode", "flight mode", "airplane"), Settings.ACTION_AIRPLANE_MODE_SETTINGS),
+        QuickSettings.LOCATION to Mode("Location", listOf("location", "gps"), Settings.ACTION_LOCATION_SOURCE_SETTINGS),
+        QuickSettings.DARK_MODE to Mode("Dark mode", listOf("dark mode", "dark theme", "night mode"), Settings.ACTION_DISPLAY_SETTINGS),
+        QuickSettings.BATTERY_SAVER to Mode("Power saving mode", listOf("power saving mode", "power saving", "battery saver", "power saver", "battery saving"), Settings.ACTION_BATTERY_SAVER_SETTINGS),
+        QuickSettings.SUPER_SAVER to Mode("Super power saving mode", listOf("super power saving mode", "super power saving", "ultra power saving", "super battery saver", "extreme battery saver"), Settings.ACTION_BATTERY_SAVER_SETTINGS),
+        QuickSettings.SCREEN_RECORDING to Mode("Screen recording", listOf("screen recording", "screen record", "screen recorder", "record screen"), null),
+        QuickSettings.AUTO_ROTATE to Mode("Auto-rotate", listOf("auto-rotate", "auto rotate", "autorotate", "rotation", "screen rotation"), Settings.ACTION_DISPLAY_SETTINGS),
+    )
+
+    private suspend fun quickToggle(setting: String, on: Boolean): String {
+        val mode = modes.getValue(setting)
+        // Screen recording opens its own prompt, so the panel isn't closed after tapping it.
+        return quickTile(mode.name, mode.labels, on, mode.settings, closeAfter = setting != QuickSettings.SCREEN_RECORDING) { null }
+    }
+
+    /**
+     * Android doesn't let apps switch these modes directly, so this opens Quick Settings
+     * and taps the tile, the same way you would.
+     */
+    private suspend fun quickTile(
+        name: String,
+        labels: List<String>,
+        on: Boolean,
+        settingsAction: String?,
+        closeAfter: Boolean = true,
+        isOn: () -> Boolean?,
+    ): String {
+        if (isOn() == on) return "$name is already ${onOff(on)}"
+        val service = AutomationService.instance ?: return "Turn on the Accessibility Service for Pocket Assistant first"
+        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)
+        delay(1000)
+        var close = true
+        try {
+            repeat(4) {
+                val tile = service.findTile(labels)
+                if (tile != null) {
+                    val before = isOn() ?: service.tileState(tile)
+                    if (before == on) return "$name is already ${onOff(on)}"
+                    if (!service.pressTile(tile)) return "I found $name but couldn't tap it"
+                    close = closeAfter
+                    delay(1200)
+                    val after = isOn() ?: service.findTile(labels)?.let(service::tileState)
+                    return when (after) {
+                        on -> "$name ${onOff(on)}"
+                        null -> "I tapped $name"
+                        else -> "I tapped $name, but please check it, as it may need you to confirm"
+                    }
+                }
+                service.nextQuickSettingsPage()
+                delay(600)
+            }
+        } finally {
+            if (close) service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
         }
-        return "Searching for $query"
+        if (settingsAction != null) {
+            delay(300)
+            launch(Intent(settingsAction))
+            return "I couldn't find the $name tile in Quick Settings, so I opened its settings"
+        }
+        return "I couldn't find the $name tile. Add it to Quick Settings, then try again"
+    }
+
+    private fun ringer(mode: String): String {
+        val audio = context.getSystemService(AudioManager::class.java)
+        val target = when (mode) {
+            "silent" -> AudioManager.RINGER_MODE_SILENT
+            "vibrate" -> AudioManager.RINGER_MODE_VIBRATE
+            else -> AudioManager.RINGER_MODE_NORMAL
+        }
+        val policy = context.getSystemService(NotificationManager::class.java)
+        return try {
+            audio.ringerMode = target
+            when (mode) {
+                "silent" -> "Phone is on silent"
+                "vibrate" -> "Phone is on vibrate"
+                else -> "Ring mode on"
+            }
+        } catch (e: SecurityException) {
+            if (!policy.isNotificationPolicyAccessGranted) launch(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+            "Allow Do Not Disturb access for Pocket Assistant, then try again"
+        }
+    }
+
+    private fun webSearch(query: String, site: String?): String {
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        val url = if (site == "youtube") "https://www.youtube.com/results?search_query=$encoded" else "https://www.google.com/search?q=$encoded"
+        launch(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        return if (site == "youtube") "Searching YouTube for $query" else "Searching Google for $query"
     }
 
     private fun global(action: Int, done: String): String {
@@ -200,10 +306,8 @@ class ToolExecutor(private val context: Context) {
     private fun granted(permission: String) =
         context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
-    /** Finds the contact you meant. If two are equally likely, it asks instead of guessing. */
-    private fun resolveNumber(target: String): Pair<String?, String?> {
-        if (PhoneTarget.looksLikeNumber(target)) return target to null
-        if (!granted(Manifest.permission.READ_CONTACTS)) return null to "Allow Contacts permission in the app first"
+    private fun readContacts(): Map<String, List<Pair<String, Boolean>>> {
+        if (!granted(Manifest.permission.READ_CONTACTS)) return emptyMap()
         val columns = arrayOf(
             ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
             ContactsContract.CommonDataKinds.Phone.NORMALIZED_NUMBER,
@@ -218,7 +322,23 @@ class ToolExecutor(private val context: Context) {
                 numbers.getOrPut(name) { ArrayList() }.add(number to (cursor.getInt(3) == 1))
             }
         }
-        val name = ContactMatcher.best(target, numbers.keys) ?: return null to "I couldn't find $target in your contacts"
+        return numbers
+    }
+
+    /** Contact names, used to tell where a name ends and a message begins. */
+    fun contactNames(): Collection<String> = runCatching { readContacts().keys }.getOrDefault(emptySet())
+
+    /** Finds the contact you meant. If two are equally likely, it asks instead of guessing. */
+    private fun resolveNumber(target: String): Pair<String?, String?> {
+        if (PhoneTarget.looksLikeNumber(target)) return target to null
+        if (!granted(Manifest.permission.READ_CONTACTS)) return null to "Allow Contacts permission in the app first"
+        val numbers = readContacts()
+        val found = ContactMatcher.top(target, numbers.keys)
+        val name = when (found.size) {
+            0 -> return null to "I couldn't find $target in your contacts"
+            1 -> found.first()
+            else -> return null to "I found ${found.take(3).joinToString(" and ")}. Please say the full name"
+        }
         val options = numbers.getValue(name)
         return (options.firstOrNull { it.second } ?: options.first()).first to null
     }
@@ -228,8 +348,12 @@ class ToolExecutor(private val context: Context) {
         val (number, error) = resolveNumber(to)
         if (number == null) return error ?: "I couldn't find that number"
         val sms = context.getSystemService(SmsManager::class.java)
-        sms.sendMultipartTextMessage(number, null, sms.divideMessage(body), null, null)
-        return "SMS sent to $to"
+        return try {
+            sms.sendMultipartTextMessage(number, null, sms.divideMessage(body), null, null)
+            "SMS sent to $to"
+        } catch (e: Exception) {
+            "The SMS couldn't be sent. Check that a SIM is set for SMS"
+        }
     }
 
     private fun placeCall(to: String): String {
@@ -243,17 +367,23 @@ class ToolExecutor(private val context: Context) {
     private suspend fun sendWhatsApp(to: String, body: String): String {
         val (number, error) = resolveNumber(to)
         if (number == null) return error ?: "I couldn't find that number"
-        val service = AutomationService.instance ?: return "Turn on the Accessibility Service in Control Center first"
+        val service = AutomationService.instance ?: return "Turn on the Accessibility Service for Pocket Assistant first"
         var digits = PhoneTarget.digits(number)
+        if (digits.length == 11 && digits.startsWith("0")) digits = digits.drop(1)
         if (digits.length == 10) digits = "91$digits"
         val encoded = URLEncoder.encode(body, "UTF-8").replace("+", "%20")
-        launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$digits?text=$encoded")).setPackage("com.whatsapp"))
-        repeat(16) {
-            delay(250)
-            if (AutomationService.foregroundPackage == "com.whatsapp" && service.tapSendInWhatsApp()) {
+        val link = Uri.parse("https://api.whatsapp.com/send?phone=$digits&text=$encoded")
+        val app = listOf("com.whatsapp", "com.whatsapp.w4b").firstOrNull { pkg ->
+            runCatching { context.packageManager.getPackageInfo(pkg, 0) }.isSuccess
+        } ?: return "WhatsApp isn't installed"
+        launch(Intent(Intent.ACTION_VIEW, link).setPackage(app))
+        repeat(24) {
+            delay(300)
+            if (service.tapSendInWhatsApp(app)) {
+                delay(500)
                 return "WhatsApp message sent to $to"
             }
         }
-        return "I opened the chat, but couldn't press Send. Please check it"
+        return "I opened the chat with your message, but couldn't press Send. Please tap Send"
     }
 }

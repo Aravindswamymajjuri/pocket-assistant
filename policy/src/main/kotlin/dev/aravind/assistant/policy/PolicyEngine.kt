@@ -26,7 +26,7 @@ object BlockedApps {
         "com.x8bit.bitwarden", "com.google.android.apps.authenticator2", "com.azure.authenticator", "com.authy.authy",
     )
     private val system = setOf(
-        "com.android.settings", "com.android.permissioncontroller", "com.google.android.permissioncontroller",
+        "com.android.permissioncontroller", "com.google.android.permissioncontroller",
         "com.android.packageinstaller", "com.google.android.packageinstaller", "com.android.vending",
         "com.google.android.gms", "com.coloros.safecenter", "com.oplus.safecenter",
         // Windows programs that could change the system or run commands.
@@ -111,7 +111,7 @@ object PolicyEngine {
         if (call.tool.category == Category.SCREEN && call.tool != Tool.GO_HOME &&
             BlockedApps.blocksAutomation(ctx.foregroundPackage, ctx.ownPackage)
         ) {
-            return Decision.Deny("I can't control this screen")
+            return Decision.Deny("I can't control this screen. Open the app you want first, then ask again")
         }
 
         if (call.tool.hasRecipient) {
@@ -132,9 +132,8 @@ object PolicyEngine {
         return when (call.tool.risk) {
             Risk.L0_SAFE -> Decision.Allow
             Risk.L1_PERSONAL -> if (ctx.voiceVerified) Decision.Allow else Decision.Biometric(Readback.of(call))
-            Risk.L2_OUTBOUND ->
-                if (ctx.voiceVerified && !ctx.tainted) Decision.Confirm(Readback.of(call))
-                else Decision.Biometric(Readback.of(call))
+            // A quick yes or a tap is enough, unless untrusted content was read during this task.
+            Risk.L2_OUTBOUND -> if (ctx.tainted) Decision.Biometric(Readback.of(call)) else Decision.Confirm(Readback.of(call))
             else -> Decision.Deny("Do this manually")
         }
     }
@@ -385,13 +384,16 @@ object ContactMatcher {
         return if (close) 50 else 0
     }
 
-    /** Returns the single best contact, or null if nothing matches or two are equally likely. */
-    fun best(spoken: String, names: Collection<String>): String? {
+    /** Returns every contact tied for the best match, so the caller can tell "none" from "too many". */
+    fun top(spoken: String, names: Collection<String>): List<String> {
         val query = words(spoken)
         val scored = names.distinct().map { it to score(query, it) }.filter { it.second > 0 }
-        val top = scored.maxOfOrNull { it.second } ?: return null
-        return scored.filter { it.second == top }.singleOrNull()?.first
+        val best = scored.maxOfOrNull { it.second } ?: return emptyList()
+        return scored.filter { it.second == best }.map { it.first }
     }
+
+    /** Returns the single best contact, or null if nothing matches or two are equally likely. */
+    fun best(spoken: String, names: Collection<String>): String? = top(spoken, names).singleOrNull()
 }
 
 /** Hints that help Whisper spell common commands and your assistant's name correctly. */

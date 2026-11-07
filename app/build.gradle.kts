@@ -10,9 +10,9 @@ android {
     defaultConfig {
         applicationId = "dev.aravind.assistant"
         minSdk = 31
-        targetSdk = 33
-        versionCode = 5
-        versionName = "0.4.0"
+        targetSdk = 32
+        versionCode = 6
+        versionName = "0.4.1"
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {
             cmake { arguments += listOf("-DCMAKE_BUILD_TYPE=Release", "-DANDROID_ARM_NEON=ON") }

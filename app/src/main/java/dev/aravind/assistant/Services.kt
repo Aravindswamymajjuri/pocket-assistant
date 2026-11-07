@@ -8,6 +8,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
 import android.graphics.Rect
 import android.os.IBinder
 import android.service.notification.NotificationListenerService
@@ -18,6 +20,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import dev.aravind.assistant.policy.BlockedApps
 import dev.aravind.assistant.policy.Script
 import dev.aravind.assistant.policy.ScriptDetect
@@ -236,8 +239,8 @@ class AutomationService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             val current = event.packageName?.toString()
-            // The wake screen sits on top for a moment, and it shouldn't count as the app in use.
-            if (!(current == packageName && WakeUi.visible)) foregroundPackage = current
+            // The assistant's own screens never count as the app you're using.
+            if (current != null && current != packageName && current != SYSTEM_UI) foregroundPackage = current
         }
     }
 
@@ -255,8 +258,39 @@ class AutomationService : AccessibilityService() {
         return !bounds.isEmpty
     }
 
-    private fun allowedHere(): Boolean =
-        AssistantRuntime.armed.value && !BlockedApps.blocksAutomation(rootInActiveWindow?.packageName?.toString(), packageName)
+    /** The top app window that isn't the assistant itself or the status bar. */
+    fun targetRoot(): AccessibilityNodeInfo? {
+        val fromWindows = runCatching {
+            windows.asSequence()
+                .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+                .mapNotNull { it.root }
+                .firstOrNull { it.packageName?.toString().let { p -> p != packageName && p != SYSTEM_UI } }
+        }.getOrNull()
+        return fromWindows ?: rootInActiveWindow?.takeIf { it.packageName?.toString() != packageName }
+    }
+
+    fun targetPackage(): String? = targetRoot()?.packageName?.toString()
+
+    private fun allowedRoot(): AccessibilityNodeInfo? {
+        if (!AssistantRuntime.armed.value) return null
+        val root = targetRoot() ?: return null
+        return root.takeUnless { BlockedApps.blocksAutomation(it.packageName?.toString(), packageName) }
+    }
+
+    private fun gesture(path: Path, duration: Long): Boolean = dispatchGesture(
+        GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, duration)).build(),
+        null,
+        null,
+    )
+
+    private fun tapAt(x: Float, y: Float) = gesture(Path().apply { moveTo(x, y) }, 60)
+
+    private fun press(node: AccessibilityNodeInfo): Boolean {
+        if (click(node)) return true
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        return !bounds.isEmpty && tapAt(bounds.exactCenterX(), bounds.exactCenterY())
+    }
 
     private fun search(node: AccessibilityNodeInfo?, test: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
         if (node == null) return null
@@ -276,20 +310,93 @@ class AutomationService : AccessibilityService() {
         return false
     }
 
-    fun tap(label: String): Boolean {
-        if (!allowedHere()) return false
-        val target = search(rootInActiveWindow) {
-            it.text?.toString().equals(label, ignoreCase = true) ||
-                it.contentDescription?.toString().equals(label, ignoreCase = true)
-        } ?: return false
-        return click(target)
+    private fun label(node: AccessibilityNodeInfo) =
+        (node.text?.toString() ?: node.contentDescription?.toString()).orEmpty().trim().lowercase()
+
+    /** Taps an exact match first, then the closest partial match. */
+    fun tap(text: String): Boolean {
+        val root = allowedRoot() ?: return false
+        val wanted = text.trim().lowercase()
+        val target = search(root) { label(it) == wanted }
+            ?: search(root) { label(it).startsWith(wanted) }
+            ?: search(root) { wanted.length >= 3 && label(it).contains(wanted) }
+            ?: return false
+        return press(target)
     }
 
+    /** Swipes like a finger, which works in apps that don't report scrollable lists. */
     fun scroll(down: Boolean): Boolean {
-        if (!allowedHere()) return false
-        val target = search(rootInActiveWindow) { it.isScrollable } ?: return false
-        val action = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-        return target.performAction(action)
+        allowedRoot() ?: return false
+        val metrics = resources.displayMetrics
+        val x = metrics.widthPixels / 2f
+        val top = metrics.heightPixels * 0.30f
+        val bottom = metrics.heightPixels * 0.72f
+        val path = Path().apply {
+            if (down) {
+                moveTo(x, bottom)
+                lineTo(x, top)
+            } else {
+                moveTo(x, top)
+                lineTo(x, bottom)
+            }
+        }
+        return gesture(path, 320)
+    }
+
+    private fun allRoots(): List<AccessibilityNodeInfo> =
+        runCatching { windows.mapNotNull { it.root } }.getOrDefault(emptyList()).ifEmpty { listOfNotNull(rootInActiveWindow) }
+
+    /** Finds a Quick Settings tile by its name. */
+    fun findTile(labels: List<String>): AccessibilityNodeInfo? {
+        for (root in allRoots().filter { it.packageName?.toString() == SYSTEM_UI }) {
+            val node = search(root) { node ->
+                val text = label(node)
+                labels.any { text == it || text.startsWith("$it,") || text.startsWith("$it ") || text.startsWith("$it.") }
+            } ?: continue
+            var clickable: AccessibilityNodeInfo? = node
+            while (clickable != null && !clickable.isClickable) clickable = clickable.parent
+            return clickable ?: node
+        }
+        return null
+    }
+
+    private val onWord = Regex("\\b(on|enabled|turned on|active|connected)\\b")
+    private val offWord = Regex("\\b(off|disabled|turned off|inactive|disconnected|unavailable)\\b")
+
+    private fun stateFrom(text: CharSequence?): Boolean? {
+        val t = text?.toString()?.lowercase() ?: return null
+        return when {
+            offWord.containsMatchIn(t) -> false
+            onWord.containsMatchIn(t) -> true
+            else -> null
+        }
+    }
+
+    /** Reads whether a tile is on. Returns null if the tile doesn't say. */
+    fun tileState(tile: AccessibilityNodeInfo): Boolean? {
+        if (tile.isCheckable) return tile.isChecked
+        stateFrom(tile.stateDescription)?.let { return it }
+        for (index in 0 until tile.childCount) {
+            val child = tile.getChild(index) ?: continue
+            if (child.isCheckable) return child.isChecked
+            stateFrom(child.stateDescription)?.let { return it }
+            stateFrom(child.text)?.let { return it }
+        }
+        return stateFrom(tile.contentDescription)
+    }
+
+    fun pressTile(tile: AccessibilityNodeInfo) = press(tile)
+
+    /** Moves Quick Settings to its next page of tiles. */
+    fun nextQuickSettingsPage(): Boolean {
+        for (root in allRoots().filter { it.packageName?.toString() == SYSTEM_UI }) {
+            val pager = search(root) { it.isScrollable && it.className?.toString().orEmpty().contains("ViewPager") }
+                ?: search(root) { it.isScrollable }
+            if (pager != null && pager.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) return true
+        }
+        val metrics = resources.displayMetrics
+        val y = metrics.heightPixels * 0.28f
+        return gesture(Path().apply { moveTo(metrics.widthPixels * 0.85f, y); lineTo(metrics.widthPixels * 0.15f, y) }, 280)
     }
 
     /**
@@ -323,13 +430,12 @@ class AutomationService : AccessibilityService() {
     }
 
     /** Works only inside WhatsApp, and only after the message was approved. */
-    fun tapSendInWhatsApp(): Boolean {
-        val root = rootInActiveWindow ?: return false
-        if (root.packageName?.toString() != "com.whatsapp") return false
+    fun tapSendInWhatsApp(app: String): Boolean {
+        val root = allRoots().firstOrNull { it.packageName?.toString() == app } ?: return false
         val target = search(root) {
-            it.viewIdResourceName == "com.whatsapp:id/send" || it.contentDescription?.toString() == "Send"
+            it.viewIdResourceName == "$app:id/send" || it.contentDescription?.toString().equals("Send", ignoreCase = true)
         } ?: return false
-        return click(target)
+        return press(target)
     }
 
     companion object {
@@ -338,6 +444,8 @@ class AutomationService : AccessibilityService() {
 
         @Volatile
         var foregroundPackage: String? = null
+
+        const val SYSTEM_UI = "com.android.systemui"
 
         private val SETTINGS_PACKAGES = setOf(
             "com.android.settings", "com.oplus.wirelesssettings", "com.coloros.wirelesssettings", "com.android.settings.intelligence",
@@ -370,8 +478,15 @@ class NotificationsService : NotificationListenerService() {
         @Volatile
         var instance: NotificationsService? = null
 
-        fun spokenSummary(): String {
-            val service = instance ?: return "Turn on notification access in Control Center first"
+        fun spokenSummary(context: android.content.Context): String {
+            val component = android.content.ComponentName(context, NotificationsService::class.java)
+            val granted = context.getSystemService(android.app.NotificationManager::class.java)
+                .isNotificationListenerAccessGranted(component)
+            if (!granted) return "Turn on notification access for Pocket Assistant in the Settings tab first"
+            val service = instance ?: run {
+                requestRebind(component)
+                return "Notification access is reconnecting. Ask me again in a few seconds"
+            }
             val lines = service.lines()
             return if (lines.isEmpty()) "You have no notifications" else lines.joinToString(". ")
         }

@@ -112,13 +112,16 @@ class ConfirmActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         protectWindow()
         val readback = intent.getStringExtra(EXTRA_READBACK).orEmpty()
+        val biometric = intent.getBooleanExtra(EXTRA_BIOMETRIC, true)
         setContent {
             AppTheme {
                 Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Spacer(Modifier.statusBarsPadding())
                     Text("Confirm this action", style = MaterialTheme.typography.headlineSmall)
                     Text(readback, style = MaterialTheme.typography.bodyLarge)
-                    Button(onClick = { approve(readback) }, Modifier.fillMaxWidth()) { Text("Approve") }
+                    Button(onClick = { if (biometric) approve(readback) else finishWith(true) }, Modifier.fillMaxWidth()) {
+                        Text(if (biometric) "Approve with fingerprint" else "Send")
+                    }
                     OutlinedButton(onClick = { finishWith(false) }, Modifier.fillMaxWidth()) { Text("Cancel") }
                 }
             }
@@ -143,6 +146,7 @@ class ConfirmActivity : FragmentActivity() {
 
     companion object {
         const val EXTRA_READBACK = "readback"
+        const val EXTRA_BIOMETRIC = "biometric"
     }
 }
 
@@ -207,7 +211,9 @@ class WakeActivity : FragmentActivity() {
         setTurnScreenOn(true)
         WakeUi.visible = true
         WakeUi.clearNotification(this)
-        setContent { AppTheme { WakeScreen(onClose = ::finish) } }
+        setContent {
+            MaterialTheme(colorScheme = darkColorScheme()) { WakeScreen(onClose = ::finish) }
+        }
     }
 
     override fun onDestroy() {
@@ -239,27 +245,32 @@ private fun WakeScreen(onClose: () -> Unit) {
     }
     val heard = transcript.lastOrNull { it.startsWith("You: ") }?.removePrefix("You: ").orEmpty()
     val reply = transcript.lastOrNull { it.startsWith("Assistant: ") }?.removePrefix("Assistant: ").orEmpty()
-    Column(
-        Modifier.fillMaxSize().clickable(onClick = onClose).padding(28.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically),
-    ) {
-        Box(
-            Modifier.size(150.dp)
-                .graphicsLayer {
-                    scaleX = pulse.value
-                    scaleY = pulse.value
-                }
-                .background(MaterialTheme.colorScheme.primary, CircleShape),
-        )
-        Text(if (status == "Ready") "Done" else status, style = MaterialTheme.typography.headlineSmall)
-        if (heard.isNotEmpty()) Text(heard, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
-        if (reply.isNotEmpty()) Text(reply, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
-        OutlinedButton(
-            onClick = {
-                AssistantService.instance?.let { it.startService(Intent(it, AssistantService::class.java).setAction(AssistantService.ACTION_LISTEN)) }
-            },
-        ) { Text("Talk again") }
+    // A card at the bottom, so the app you're using stays visible above it.
+    Box(Modifier.fillMaxSize().clickable(onClick = onClose), contentAlignment = Alignment.BottomCenter) {
+        Card(Modifier.fillMaxWidth().padding(12.dp).clickable(enabled = false) {}) {
+            Column(
+                Modifier.fillMaxWidth().padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Box(
+                    Modifier.size(64.dp)
+                        .graphicsLayer {
+                            scaleX = pulse.value
+                            scaleY = pulse.value
+                        }
+                        .background(MaterialTheme.colorScheme.primary, CircleShape),
+                )
+                Text(if (status == "Ready") "Done" else status, style = MaterialTheme.typography.titleLarge)
+                if (heard.isNotEmpty()) Text(heard, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+                if (reply.isNotEmpty()) Text(reply, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
+                OutlinedButton(
+                    onClick = {
+                        AssistantService.instance?.let { it.startService(Intent(it, AssistantService::class.java).setAction(AssistantService.ACTION_LISTEN)) }
+                    },
+                ) { Text("Talk again") }
+            }
+        }
     }
 }
 
@@ -276,6 +287,7 @@ private val notificationPermission =
 
 private val runtimePermissions = notificationPermission + listOf(
     "Microphone" to Manifest.permission.RECORD_AUDIO,
+    "Nearby devices (Bluetooth)" to Manifest.permission.BLUETOOTH_CONNECT,
     "Contacts" to Manifest.permission.READ_CONTACTS,
     "Phone calls" to Manifest.permission.CALL_PHONE,
     "SMS" to Manifest.permission.SEND_SMS,

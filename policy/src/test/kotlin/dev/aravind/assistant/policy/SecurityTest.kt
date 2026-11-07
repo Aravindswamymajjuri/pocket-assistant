@@ -43,8 +43,8 @@ class SecurityTest {
         assertTrue(decision is Decision.Deny)
     }
 
-    @Test fun outboundNeedsBiometricWithoutVoice() {
-        assertTrue(PolicyEngine.evaluate(sms, ctx) is Decision.Biometric)
+    @Test fun outboundNeedsQuickConfirmation() {
+        assertTrue(PolicyEngine.evaluate(sms, ctx) is Decision.Confirm)
     }
 
     @Test fun outboundNeedsBiometricWhenTaintedEvenWithVoice() {
@@ -88,7 +88,8 @@ class SecurityTest {
         val tap = call("tap_text", "text" to "Allow")
         assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "com.android.permissioncontroller")) is Decision.Deny)
         assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "dev.aravind.assistant")) is Decision.Deny)
-        assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "com.android.settings")) is Decision.Deny)
+        assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "com.oplus.safecenter")) is Decision.Deny)
+        assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "com.android.settings")) is Decision.Allow)
         assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = null)) is Decision.Deny)
     }
 
@@ -270,7 +271,7 @@ class SecurityTest {
         listOf("cmd.exe", "powershell.exe", "regedit.exe", "systemsettings.exe", "taskmgr.exe").forEach { exe ->
             assertTrue(exe, PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = exe)) is Decision.Deny)
         }
-        assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "notepad.exe")) is Decision.Biometric)
+        assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "notepad.exe")) is Decision.Allow)
         assertTrue(PolicyEngine.evaluate(call("open_app", "name" to "Windows Terminal"), ctx) is Decision.Deny)
         assertTrue(PolicyEngine.evaluate(call("open_app", "name" to "Command Prompt"), ctx) is Decision.Deny)
         assertTrue(PolicyEngine.evaluate(call("open_app", "name" to "Notepad"), ctx) is Decision.Allow)
@@ -322,5 +323,87 @@ class SecurityTest {
         assertEquals("", WakeName.heardIn("Nova", "Nova"))
         assertNull(WakeName.heardIn("what is the time", "Nova"))
         assertNull(WakeName.heardIn("the supernova exploded", "Nova"))
+    }
+
+    @Test fun alarmsWithDayWords() {
+        val today = CommandRouter.route("set an alarm at 5pm today")
+        assertEquals(Tool.SET_ALARM, today?.tool)
+        assertEquals(17L, today?.long("hour"))
+        assertEquals(17L, CommandRouter.route("Set an alarm for 5:00 p.m. today.")?.long("hour"))
+        assertEquals(6L, CommandRouter.route("wake me up at 6 tomorrow")?.long("hour"))
+        assertEquals(19L, CommandRouter.route("set alarm at 7 in the evening")?.long("hour"))
+        assertEquals(30L, CommandRouter.route("set alarm for 6.30 am")?.long("minute"))
+    }
+
+    @Test fun messagesInEverydayWords() {
+        val contacts = listOf("Daddy", "Amma", "Ravi Teja", "Ravi Kumar")
+        fun check(text: String, tool: Tool, to: String, body: String) {
+            val c = CommandRouter.route(text, contacts)
+            assertEquals(text, tool, c?.tool)
+            assertEquals(text, to, c?.text("to"))
+            assertEquals(text, body, c?.text("body"))
+        }
+        check("send a msg to daddy hi", Tool.SEND_WHATSAPP, "daddy", "hi")
+        check("Send a message to Daddy, how are you?", Tool.SEND_WHATSAPP, "Daddy", "how are you")
+        check("send hi to daddy on whatsapp", Tool.SEND_WHATSAPP, "daddy", "hi")
+        check("whatsapp amma I will be late", Tool.SEND_WHATSAPP, "amma", "I will be late")
+        check("send a whatsapp message to Ravi Teja saying meet at 5", Tool.SEND_WHATSAPP, "Ravi Teja", "meet at 5")
+        check("send an sms to daddy hello", Tool.SEND_SMS, "daddy", "hello")
+        check("text amma reached home", Tool.SEND_SMS, "amma", "reached home")
+        check("tell daddy that I am coming", Tool.SEND_WHATSAPP, "daddy", "I am coming")
+        check("send a msg to daddy hi and call me later", Tool.SEND_WHATSAPP, "daddy", "hi and call me later")
+        assertNull(CommandRouter.route("tell me a joke", contacts))
+        assertEquals("Ravi", CommandRouter.route("send a text to Ravi saying hello")?.text("to"))
+    }
+
+    @Test fun stepsKeepMessagesWhole() {
+        assertEquals(listOf("open whatsapp", "send a msg to daddy hi"), CommandRouter.steps("open whatsapp, send a msg to daddy hi"))
+        assertEquals(listOf("send a msg to daddy hi and call me"), CommandRouter.steps("send a msg to daddy hi and call me"))
+        assertEquals(listOf("turn on wifi", "open youtube"), CommandRouter.steps("turn on wifi and open youtube"))
+        assertEquals(listOf("what is AI, and how does it work"), CommandRouter.steps("what is AI, and how does it work"))
+        assertEquals(listOf("call daddy", "send a message to amma hi"), CommandRouter.steps("call daddy and send a message to amma hi"))
+    }
+
+    @Test fun phoneModesRoute() {
+        fun mode(text: String) = CommandRouter.route(text)
+        assertEquals(QuickSettings.HOTSPOT, mode("turn on hotspot")?.text("setting"))
+        assertEquals(QuickSettings.AIRPLANE, mode("turn on aeroplane mode")?.text("setting"))
+        assertEquals(false, mode("turn off airplane mode")?.bool("on"))
+        assertEquals(QuickSettings.LOCATION, mode("turn off location")?.text("setting"))
+        assertEquals(QuickSettings.DARK_MODE, mode("enable dark mode")?.text("setting"))
+        assertEquals(QuickSettings.BATTERY_SAVER, mode("turn on power saving mode")?.text("setting"))
+        assertEquals(QuickSettings.SUPER_SAVER, mode("turn on ultra power saving mode")?.text("setting"))
+        assertEquals(QuickSettings.SCREEN_RECORDING, mode("start screen recording")?.text("setting"))
+        assertEquals(Tool.MOBILE_DATA, mode("turn of mobile data")?.tool)
+        assertEquals(false, mode("turn of mobile data")?.bool("on"))
+        assertEquals(Tool.BLUETOOTH, mode("switch off the bluetooth")?.tool)
+        assertEquals(Tool.OPEN_APP, mode("start youtube")?.tool)
+    }
+
+    @Test fun ringerModesRoute() {
+        fun ring(text: String) = CommandRouter.route(text)?.text("mode")
+        assertEquals("silent", ring("turn on silent mode"))
+        assertEquals("silent", ring("put my phone on silent"))
+        assertEquals("vibrate", ring("vibration mode"))
+        assertEquals("vibrate", ring("turn on vibrate mode"))
+        assertEquals("normal", ring("turn off silent mode"))
+        assertEquals("normal", ring("ring mode"))
+        assertEquals("normal", ring("unmute my phone"))
+        assertEquals(Tool.PLACE_CALL, CommandRouter.route("ring daddy")?.tool)
+    }
+
+    @Test fun webSearchPhrases() {
+        assertEquals("weather in hyderabad", CommandRouter.route("search for weather in hyderabad")?.text("query"))
+        assertEquals("cricket score", CommandRouter.route("search cricket score on google")?.text("query"))
+        val yt = CommandRouter.route("play telugu songs on youtube")
+        assertEquals("youtube", yt?.text("site"))
+        assertEquals("telugu songs", yt?.text("query"))
+    }
+
+    @Test fun notificationsAndTapsRunDirectly() {
+        assertTrue(PolicyEngine.evaluate(call("read_notifications"), ctx) is Decision.Allow)
+        assertTrue(PolicyEngine.evaluate(call("tap_text", "text" to "Send"), ctx) is Decision.Allow)
+        assertEquals(Tool.READ_NOTIFICATIONS, CommandRouter.route("read my notifications")?.tool)
+        assertEquals("Next", CommandRouter.route("tap the Next button")?.text("text"))
     }
 }

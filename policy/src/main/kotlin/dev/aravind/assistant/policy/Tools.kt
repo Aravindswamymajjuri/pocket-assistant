@@ -38,14 +38,27 @@ enum class Tool(
     WIFI("wifi", Risk.L0_SAFE, Category.SYSTEM, mapOf("on" to BoolParam()), "Turn Wi-Fi on or off"),
     BLUETOOTH("bluetooth", Risk.L0_SAFE, Category.SYSTEM, mapOf("on" to BoolParam()), "Turn Bluetooth on or off"),
     MOBILE_DATA("mobile_data", Risk.L0_SAFE, Category.SYSTEM, mapOf("on" to BoolParam()), "Turn mobile data on or off"),
+    QUICK_TOGGLE(
+        "quick_toggle", Risk.L0_SAFE, Category.SYSTEM,
+        mapOf("setting" to ChoiceParam(QuickSettings.ALL), "on" to BoolParam()),
+        "Turn a phone mode on or off. setting is one of: ${QuickSettings.ALL.joinToString()}",
+    ),
+    RINGER_MODE(
+        "ringer_mode", Risk.L0_SAFE, Category.SYSTEM,
+        mapOf("mode" to ChoiceParam(setOf("normal", "vibrate", "silent"))), "Set the phone to ring, vibrate, or silent",
+    ),
     DO_NOT_DISTURB("do_not_disturb", Risk.L0_SAFE, Category.SYSTEM, mapOf("on" to BoolParam()), "Turn Do Not Disturb on or off"),
     LOCK_PHONE("lock_phone", Risk.L0_SAFE, Category.SYSTEM, description = "Lock the phone"),
-    WEB_SEARCH("web_search", Risk.L0_SAFE, Category.WEB, mapOf("query" to TextParam(200)), "Search in the browser"),
+    WEB_SEARCH(
+        "web_search", Risk.L0_SAFE, Category.WEB,
+        mapOf("query" to TextParam(200), "site" to ChoiceParam(setOf("google", "youtube"), required = false)),
+        "Search Google or YouTube",
+    ),
     GO_BACK("go_back", Risk.L0_SAFE, Category.SCREEN, description = "Press back"),
     GO_HOME("go_home", Risk.L0_SAFE, Category.SCREEN, description = "Go to the home screen"),
     SCROLL("scroll", Risk.L0_SAFE, Category.SCREEN, mapOf("direction" to ChoiceParam(setOf("up", "down"))), "Scroll the screen"),
-    TAP_TEXT("tap_text", Risk.L2_OUTBOUND, Category.SCREEN, mapOf("text" to TextParam(80)), "Tap a visible button or label"),
-    READ_NOTIFICATIONS("read_notifications", Risk.L1_PERSONAL, Category.NOTIFICATIONS, description = "Read my notifications aloud"),
+    TAP_TEXT("tap_text", Risk.L0_SAFE, Category.SCREEN, mapOf("text" to TextParam(80)), "Tap a visible button or label"),
+    READ_NOTIFICATIONS("read_notifications", Risk.L0_SAFE, Category.NOTIFICATIONS, description = "Read my notifications aloud"),
     SEND_SMS(
         "send_sms", Risk.L2_OUTBOUND, Category.MESSAGES,
         mapOf("to" to TextParam(60), "body" to TextParam(480)), "Send an SMS",
@@ -62,6 +75,19 @@ enum class Tool(
         private val byId = entries.associateBy { it.id }
         fun find(id: String): Tool? = byId[id]
     }
+}
+
+/** Phone modes with no public Android switch. The phone app flips their Quick Settings tiles. */
+object QuickSettings {
+    const val HOTSPOT = "hotspot"
+    const val AIRPLANE = "airplane_mode"
+    const val LOCATION = "location"
+    const val DARK_MODE = "dark_mode"
+    const val BATTERY_SAVER = "battery_saver"
+    const val SUPER_SAVER = "super_power_saving"
+    const val SCREEN_RECORDING = "screen_recording"
+    const val AUTO_ROTATE = "auto_rotate"
+    val ALL = setOf(HOTSPOT, AIRPLANE, LOCATION, DARK_MODE, BATTERY_SAVER, SUPER_SAVER, SCREEN_RECORDING, AUTO_ROTATE)
 }
 
 data class ToolCall(val tool: Tool, val args: Map<String, Any>) {

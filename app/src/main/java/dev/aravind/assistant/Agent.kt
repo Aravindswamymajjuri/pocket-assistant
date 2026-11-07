@@ -11,7 +11,6 @@ import dev.aravind.assistant.policy.ModelOutputParser
 import dev.aravind.assistant.policy.PolicyContext
 import dev.aravind.assistant.policy.PolicyEngine
 import dev.aravind.assistant.policy.Source
-import dev.aravind.assistant.policy.SpokenChallenge
 import dev.aravind.assistant.policy.TaskLimits
 import dev.aravind.assistant.policy.Tool
 import dev.aravind.assistant.policy.ToolCall
@@ -37,13 +36,13 @@ class Agent(
         val limits = TaskLimits(System::currentTimeMillis)
         var tainted = false
 
-        // A message may contain words like "then", so a complete send command is never split.
-        val whole = CommandRouter.route(utterance)
-        val steps = if (whole?.tool?.hasRecipient == true) listOf(utterance) else CommandRouter.steps(utterance)
+        // Splitting stops at the start of a message, so message text is never cut up.
+        val steps = CommandRouter.steps(utterance)
+        val contacts = executor.contactNames()
 
         for (step in steps) {
             if (!AssistantRuntime.isActive()) return
-            val routed = CommandRouter.route(step)
+            val routed = CommandRouter.route(step, contacts)
             val calls: List<ToolCall> = if (routed != null) {
                 listOf(routed)
             } else {
@@ -91,7 +90,12 @@ class Agent(
     }
 
     private suspend fun run(call: ToolCall, utterance: String, verified: Boolean, tainted: Boolean): Boolean {
-        val foreground = AutomationService.foregroundPackage
+        // The wake screen must be gone before reading or touching the app underneath it.
+        if (call.tool !in KEEPS_WAKE_SCREEN && WakeUi.visible) {
+            WakeUi.close()
+            delay(600)
+        }
+        val foreground = AutomationService.instance?.targetPackage() ?: AutomationService.foregroundPackage
         val policy = PolicyContext(
             armed = AssistantRuntime.isActive(),
             source = Source.LIVE_USER,
@@ -111,15 +115,10 @@ class Agent(
                 return false
             }
             is Decision.Allow -> Unit
-            is Decision.Confirm -> if (!voiceApprove(call, decision.readback, foreground)) return false
-            is Decision.Biometric -> if (!biometricApprove(call, decision.readback, foreground)) return false
+            is Decision.Confirm -> if (!quickApprove(call, decision.readback, foreground)) return false
+            is Decision.Biometric -> if (!screenApprove(call, decision.readback, foreground, biometric = true)) return false
         }
         if (call.tool.hasRecipient) AssistantRuntime.rateLimiter.record()
-        // The wake screen must not cover the app or screen this action is about to use.
-        if (call.tool !in KEEPS_WAKE_SCREEN && WakeUi.visible) {
-            WakeUi.close()
-            delay(450)
-        }
         val result = try {
             executor.execute(call)
         } catch (e: CancellationException) {
@@ -138,18 +137,24 @@ class Agent(
     private companion object {
         val KEEPS_WAKE_SCREEN = setOf(
             Tool.FLASHLIGHT, Tool.VOLUME, Tool.BRIGHTNESS, Tool.DO_NOT_DISTURB, Tool.SET_ALARM, Tool.SET_TIMER, Tool.READ_NOTIFICATIONS,
+            Tool.RINGER_MODE,
         )
+        val NO = Regex("\\b(no|nope|cancel|stop|don't|dont|wait|vaddu|nahi|mat)\\b")
+        val YES = Regex("\\b(yes|yeah|yep|yup|send|send it|confirm|ok|okay|sure|do it|go ahead|haan|ha|avunu|sare|sari)\\b")
     }
 
-    /** Voice approval needs a fresh random code in your voice. If it fails, your fingerprint is required. */
-    private suspend fun voiceApprove(call: ToolCall, readback: String, foreground: String?): Boolean {
+    /** Reads the message back and waits for a spoken yes. If it doesn't hear one, it shows a Send button. */
+    private suspend fun quickApprove(call: ToolCall, readback: String, foreground: String?): Boolean {
         val authority: ConfirmationAuthority = AssistantRuntime.authority ?: return false
-        val code = SpokenChallenge.create()
-        speak("$readback. To confirm, say ${SpokenChallenge.spaced(code)}")
-        val answer = listen()
-        if (answer == null || !answer.verified || !SpokenChallenge.matches(code, answer.text)) {
-            Audit.log(context, "voice_confirm_failed:${call.tool.id}")
-            return biometricApprove(call, readback, foreground)
+        speak("$readback. Say yes to send, or no to cancel")
+        val answer = listen()?.text?.lowercase().orEmpty()
+        when {
+            NO.containsMatchIn(answer) -> {
+                speak("Cancelled")
+                return false
+            }
+            YES.containsMatchIn(answer) -> Unit
+            else -> return screenApprove(call, readback, foreground, biometric = false)
         }
         Audit.log(context, "voice_confirmed:${call.tool.id}")
         val token = authority.issue(call, foreground)
@@ -157,7 +162,7 @@ class Agent(
     }
 
     /** Shows the app-built readback, then verifies a one-time token for this exact action. */
-    private suspend fun biometricApprove(call: ToolCall, readback: String, foreground: String?): Boolean {
+    private suspend fun screenApprove(call: ToolCall, readback: String, foreground: String?, biometric: Boolean): Boolean {
         val authority: ConfirmationAuthority = AssistantRuntime.authority ?: return false
         val token = authority.issue(call, foreground)
         val pending = CompletableDeferred<Boolean>()
@@ -166,7 +171,8 @@ class Agent(
         context.startActivity(
             Intent(context, ConfirmActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                .putExtra(ConfirmActivity.EXTRA_READBACK, readback),
+                .putExtra(ConfirmActivity.EXTRA_READBACK, readback)
+                .putExtra(ConfirmActivity.EXTRA_BIOMETRIC, biometric),
         )
         val approved = withTimeoutOrNull(30_000) { pending.await() } == true
         AssistantRuntime.pendingApproval = null

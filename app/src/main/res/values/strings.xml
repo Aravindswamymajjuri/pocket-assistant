@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Pocket Assistant</string>
-    <string name="accessibility_description">Lets Pocket Assistant lock the phone, go back, scroll, and tap items you ask for by voice. It ignores password fields and does not record keystrokes.</string>
+    <string name="accessibility_description">Lets Pocket Assistant lock the phone, go back, scroll, tap items, and switch Quick Settings modes you ask for by voice. It ignores password fields and does not record keystrokes.</string>
 </resources>

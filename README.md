@@ -16,6 +16,7 @@ Included:
 - Piper voices for English and Hindi, and Android's voice for Telugu
 - Gemma through LiteRT-LM from a typed path, a picked file, or a private copy
 - Apps, alarms, timers, flashlight, volume, brightness, Wi-Fi, Bluetooth, Do Not Disturb, lock, search, back, home, scroll, tap
+- Ring, vibrate, and silent modes, plus mobile data, hotspot, airplane mode, location, dark mode, power saving, auto-rotate, and screen recording through Quick Settings tiles
 - Notifications, SMS, WhatsApp, calls, and Gemma multi-step plans
 - Experimental speakerphone AI call answering for allowed numbers only
 
