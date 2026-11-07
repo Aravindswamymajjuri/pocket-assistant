@@ -199,19 +199,53 @@ object CommandRouter {
         return null
     }
 
-    private fun alarm(t: String): Pair<String, Map<String, Any?>>? {
-        val time = "(\\d{1,2})(?:[:.](\\d{2}))?\\s*(am|pm|a\\.m\\.?|p\\.m\\.?|o'?clock)?"
-        val part = "(?:\\s+(today|tonight|tomorrow|in the morning|in the evening|in the afternoon|at night|this morning|this evening|this afternoon|tomorrow morning|tomorrow evening))?"
-        val m = Regex(
-            "(?i)^(?:(?:set|create|put|keep|add)(?: me)? )?(?:an |a |the |my )?(?:alarm|wake ?up(?: call)?|wake me up|wake me)(?: for| at| by)? $time$part$",
-        ).matchEntire(t) ?: Regex("(?i)^(?:set|keep|put) (?:an |a )?(?:alarm )?(?:for |at )$time$part$").matchEntire(t) ?: return null
+    private val numberWords = mapOf(
+        "zero" to 0, "oh" to 0, "one" to 1, "two" to 2, "three" to 3, "four" to 4, "five" to 5, "six" to 6, "seven" to 7,
+        "eight" to 8, "nine" to 9, "ten" to 10, "eleven" to 11, "twelve" to 12, "thirteen" to 13, "fourteen" to 14,
+        "fifteen" to 15, "sixteen" to 16, "seventeen" to 17, "eighteen" to 18, "nineteen" to 19, "twenty" to 20,
+        "thirty" to 30, "forty" to 40, "fifty" to 50,
+    )
+
+    /** Turns the many ways speech recognition writes a time into one form, such as "7:15 pm". */
+    fun normalizeTime(text: String): String {
+        var t = " " + text.lowercase().replace(",", " ").replace(Regex("\\s+"), " ") + " "
+        t = t.replace(Regex("\\bala+r[aeu]?m\\b"), "alarm")
+        // "forty five" becomes 45, then each remaining number word becomes its digits.
+        t = t.replace(Regex("\\b(twenty|thirty|forty|fifty)[ -](one|two|three|four|five|six|seven|eight|nine)\\b")) {
+            (numberWords.getValue(it.groupValues[1]) + numberWords.getValue(it.groupValues[2])).toString()
+        }
+        t = t.replace(Regex("\\b(${numberWords.keys.filter { it != "oh" }.joinToString("|")})\\b")) { numberWords.getValue(it.value).toString() }
+        t = t.replace(Regex("\\b(\\d{1,2}) oh (\\d)\\b")) { "${it.groupValues[1]}:0${it.groupValues[2]}" }
+        t = t.replace(Regex("\\bquarter past (\\d{1,2})\\b")) { "${it.groupValues[1]}:15" }
+        t = t.replace(Regex("\\bhalf past (\\d{1,2})\\b")) { "${it.groupValues[1]}:30" }
+        t = t.replace(Regex("\\bquarter to (\\d{1,2})\\b")) { "${(it.groupValues[1].toInt() + 10) % 12 + 1}:45" }
+        t = t.replace(Regex("\\b(a|p)\\.? ?m\\b\\.?")) { "${it.groupValues[1]}m" }
+        t = t.replace(Regex("\\b(\\d{1,2})[.\\- ](\\d{2})\\b(?= ?(?:am|pm|o'?clock)?\\b)")) { "${it.groupValues[1]}:${it.groupValues[2]}" }
+        t = t.replace(Regex("\\b(\\d{1,2})(\\d{2})\\b(?= ?(?:am|pm|o'?clock|hours?)?\\b)")) { m ->
+            if (m.groupValues[2].toInt() < 60) "${m.groupValues[1]}:${m.groupValues[2]}" else m.value
+        }
+        return t.replace(Regex("\\s+"), " ").trim()
+    }
+
+    private fun alarm(raw: String): Pair<String, Map<String, Any?>>? {
+        if (!Regex("(?i)\\b(ala+r[aeu]?m|wake)").containsMatchIn(raw)) return null
+        val t = normalizeTime(raw)
+        val time = "(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm|o'?clock|hours)?"
+        val part = "(?:\\s+(?:at |for )?(today|tonight|tomorrow|in the morning|in the evening|in the afternoon|at night|this morning|this evening|this afternoon|tomorrow morning|tomorrow evening|morning|evening|night))?"
+        val lead = "^(?:please )?(?:(?:set|create|put|keep|add|make)(?: me)?(?: up)? )?(?:an |a |the |my |one )?"
+        val m = Regex("$lead(?:alarm|wake ?up(?: call)?|wake me up|wake me)(?: for| at| by| on)? $time$part(?: please)?$").matchEntire(t)
+            ?: Regex("^(?:set|keep|put|create) (?:an |a )?(?:alarm )?(?:for |at )$time$part$").matchEntire(t)
+            ?: Regex("^(?:set|keep|put|create) (?:an |a )?$time(?: alarm)$part$").matchEntire(t)
+            ?: return null
         val g = m.groupValues
         val hour = to24(g[1].toLong(), g[3], g[4]) ?: return null
-        return "set_alarm" to mapOf("hour" to hour, "minute" to (g[2].toLongOrNull() ?: 0L))
+        val minute = g[2].toLongOrNull() ?: 0L
+        if (minute > 59) return null
+        return "set_alarm" to mapOf("hour" to hour, "minute" to minute)
     }
 
     private fun to24(hour: Long, meridiem: String, dayPart: String = ""): Long? {
-        val m = meridiem.lowercase().let { if (it.startsWith("o")) "" else it }
+        val m = meridiem.lowercase().let { if (it.startsWith("o") || it.startsWith("h")) "" else it }
         if (m.isEmpty()) {
             val evening = Regex("evening|afternoon|night|tonight").containsMatchIn(dayPart.lowercase())
             if (evening && hour in 1..11) return hour + 12

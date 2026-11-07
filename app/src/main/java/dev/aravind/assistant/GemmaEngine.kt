@@ -137,6 +137,7 @@ object GemmaEngine {
             To use one phone tool, use {"tool":"tool_id","args":{"name":"value"}}.
             For several steps in order, use {"plan":[{"tool":"tool_id","args":{}},{"tool":"tool_id","args":{}}]}.
             Use at most five steps. Use only the tools below. Never invent a tool. Use whole numbers for numbers.
+            Never say you did something in a reply. Actions only happen through tool calls.
             $tools
         """.trimIndent()
     }

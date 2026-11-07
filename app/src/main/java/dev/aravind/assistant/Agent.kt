@@ -10,6 +10,7 @@ import dev.aravind.assistant.policy.ModelOutput
 import dev.aravind.assistant.policy.ModelOutputParser
 import dev.aravind.assistant.policy.PolicyContext
 import dev.aravind.assistant.policy.PolicyEngine
+import dev.aravind.assistant.policy.ReplyGuard
 import dev.aravind.assistant.policy.Source
 import dev.aravind.assistant.policy.TaskLimits
 import dev.aravind.assistant.policy.Tool
@@ -49,6 +50,11 @@ class Agent(
                 when (val output = askGemma(step)) {
                     null -> return
                     is ModelOutput.Reply -> {
+                        if (ReplyGuard.isFalseActionClaim(step, output.text)) {
+                            Audit.log(context, "false_claim_blocked")
+                            speak("I didn't understand that as a command, so nothing was done. Please try saying it another way")
+                            return
+                        }
                         speak(output.text)
                         continue
                     }

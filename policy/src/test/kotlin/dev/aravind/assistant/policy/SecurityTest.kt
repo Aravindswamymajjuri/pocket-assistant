@@ -420,4 +420,28 @@ class SecurityTest {
         assertFalse(WakeName.keywords(tokenizer, "Mitra", WakeSensitivity.HIGH)!!.split("/").any { it.endsWith("@MITRA") })
         assertFalse(WakeName.keywords(tokenizer, "Mitra", WakeSensitivity.NORMAL)!!.split("/").any { it.endsWith("@MITRA") })
     }
+
+    @Test fun alarmTimesInEverySpokenForm() {
+        fun at(text: String) = CommandRouter.route(text)?.let { it.long("hour") to it.long("minute") }
+        assertEquals(19L to 15L, at("set an alaram 7.15 pm today"))
+        assertEquals(19L to 15L, at("Set an alarm 7.15 p.m. today."))
+        assertEquals(19L to 15L, at("Set an alarm for 715 PM today."))
+        assertEquals(19L to 15L, at("set an alarm at 7 15 pm, today"))
+        assertEquals(19L to 15L, at("set an alarm for seven fifteen p.m. today"))
+        assertEquals(19L to 15L, at("Set an alarm for 7:15 PM, today."))
+        assertEquals(19L to 15L, at("set alarm at quarter past 7 in the evening"))
+        assertEquals(18L to 45L, at("set alarm at quarter to 7 pm"))
+        assertEquals(6L to 30L, at("wake me up at half past six"))
+        assertEquals(19L to 0L, at("set an alarm at 7.00 pm today"))
+        assertEquals(19L to 15L, at("set a 7:15 pm alarm"))
+        assertEquals(21L to 45L, at("set alarm for 2145"))
+        assertEquals(7L to 5L, at("set alarm for seven oh five am"))
+    }
+
+    @Test fun falseActionClaimsAreCaught() {
+        assertTrue(ReplyGuard.isFalseActionClaim("set an alarm 7.15 pm today", "I've set an alarm for 7:15 PM today."))
+        assertTrue(ReplyGuard.isFalseActionClaim("send hi to ravi", "Message sent to Ravi."))
+        assertFalse(ReplyGuard.isFalseActionClaim("what is the capital of france", "The capital of France is Paris."))
+        assertFalse(ReplyGuard.isFalseActionClaim("tell me a joke", "Why did the chicken cross the road?"))
+    }
 }

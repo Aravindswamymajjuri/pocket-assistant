@@ -535,6 +535,33 @@ private fun HomeScreen(activity: FragmentActivity) {
                 }
             }
         }
+        val engine = remember(refreshKey) { Features.speechEngine(activity) }
+        val googleOnDevice = remember(refreshKey) { GoogleStt.onDeviceAvailable(activity) }
+        Text("Speech recognition", style = MaterialTheme.typography.bodyLarge)
+        Text(
+            if (googleOnDevice) "Google on-device: available, works offline" else "Google on-device: not available on this phone",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf(SpeechEngine.AUTO to "Auto", SpeechEngine.GOOGLE to "Google", SpeechEngine.MOONSHINE to "Moonshine", SpeechEngine.WHISPER to "Whisper")
+                .forEach { (value, label) ->
+                    val onClick = {
+                        Features.setSpeechEngine(activity, value)
+                        refresh++
+                        Unit
+                    }
+                    if (value == engine) Button(onClick = onClick) { Text(label) } else OutlinedButton(onClick = onClick) { Text(label) }
+                }
+        }
+        Text(
+            when (engine) {
+                SpeechEngine.GOOGLE -> "Most accurate for Indian English. Without its offline pack, Google may use the internet"
+                SpeechEngine.MOONSHINE -> "Open-source and fast. English only"
+                SpeechEngine.WHISPER -> "Open-source. Slower, but understands Hindi and Telugu"
+                else -> "Uses Google on-device if available, otherwise Moonshine. Hindi and Telugu use Whisper"
+            },
+            style = MaterialTheme.typography.bodySmall,
+        )
         val sensitivity = remember(refreshKey) { Features.wakeSensitivity(activity) }
         Text("Wake sensitivity", style = MaterialTheme.typography.bodyLarge)
         Text("Higher wakes more easily, but may also wake by mistake", style = MaterialTheme.typography.bodySmall)

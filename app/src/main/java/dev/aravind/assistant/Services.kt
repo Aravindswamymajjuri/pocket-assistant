@@ -163,6 +163,13 @@ class AssistantService : Service() {
     /** Spoken codes are English digits, so they're always read in English. */
     private suspend fun hear(): Heard? {
         val active = loop ?: return null
+        if (GoogleStt.inUse(this)) {
+            when (val result = GoogleStt.listen(this, "en")) {
+                is GoogleStt.Result.Text -> return Heard(result.text, false, FloatArray(0))
+                GoogleStt.Result.Nothing -> return null
+                is GoogleStt.Result.Unavailable -> Unit
+            }
+        }
         val samples = active.capture(9_000) ?: return null
         return withContext(Dispatchers.Default) { active.understand(samples, "en") }
     }

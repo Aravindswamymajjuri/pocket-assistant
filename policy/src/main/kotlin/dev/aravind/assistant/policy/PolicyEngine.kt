@@ -495,3 +495,19 @@ object ScriptDetect {
         }
     }
 }
+
+/**
+ * The AI model can only act through tool calls. If it answers a command in words as if
+ * it had done it, that answer is false and must not be spoken.
+ */
+object ReplyGuard {
+    private val command = Regex(
+        "(?i)\\b(set|turn|switch|send|call|open|alarm|timer|remind|message|text|play|enable|disable|start|stop|lock|search|whatsapp|sms|dial)\\b",
+    )
+    private val claim = Regex(
+        "(?i)\\b(i've|i have|i'll|i will|i set|i've set|is set|has been|have been|done|sent|calling|turned|switched|opened|opening|" +
+            "scheduled|created|enabled|disabled|alarm set|set for|set an alarm|setting)\\b",
+    )
+
+    fun isFalseActionClaim(userText: String, reply: String): Boolean = command.containsMatchIn(userText) && claim.containsMatchIn(reply)
+}

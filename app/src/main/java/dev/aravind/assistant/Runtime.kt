@@ -114,6 +114,12 @@ object Features {
         runCatching { WakeSensitivity.valueOf(prefs(context).getString("sensitivity", null) ?: "NORMAL") }.getOrDefault(WakeSensitivity.NORMAL)
     fun setWakeSensitivity(context: Context, value: WakeSensitivity) = prefs(context).edit().putString("sensitivity", value.name).apply()
 
+    fun speechEngine(context: Context): String = prefs(context).getString("engine", null) ?: SpeechEngine.AUTO
+    fun setSpeechEngine(context: Context, value: String) {
+        prefs(context).edit().putString("engine", value).apply()
+        GoogleStt.brokenThisSession = false
+    }
+
     fun wakeName(context: Context): String = prefs(context).getString("name", null) ?: WakeName.DEFAULT
     fun setWakeName(context: Context, value: String) = prefs(context).edit().putString("name", value.trim()).apply()
 

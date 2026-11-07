@@ -14,7 +14,7 @@ WAKE_PHRASES=${WAKE_PHRASES:-"HEY ASSISTANT"}
 
 mkdir -p "$WORK" app/libs
 rm -rf "$OUT"
-mkdir -p "$OUT"/kws "$OUT"/vad "$OUT"/whisper "$OUT"/piper "$OUT"/piper-hi "$OUT"/speaker
+mkdir -p "$OUT"/moonshine "$OUT"/kws "$OUT"/vad "$OUT"/whisper "$OUT"/piper "$OUT"/piper-hi "$OUT"/speaker
 
 if [ ! -d app/src/main/cpp/whisper.cpp ]; then
   git clone --quiet --depth 1 -b "$WHISPER_CPP_TAG" https://github.com/ggml-org/whisper.cpp app/src/main/cpp/whisper.cpp
@@ -30,6 +30,7 @@ get() {
 get "$BASE/v$SHERPA_VERSION/sherpa-onnx-$SHERPA_VERSION.aar"
 get "$BASE/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
 get "$BASE/asr-models/silero_vad.onnx"
+get "$BASE/asr-models/sherpa-onnx-moonshine-base-en-int8.tar.bz2"
 get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
 get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin"
 get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin"
@@ -79,6 +80,10 @@ with open(sys.argv[2], "w", encoding="utf-8") as out:
 PY
 
 cp "$WORK/silero_vad.onnx" "$OUT/vad/silero_vad.onnx"
+
+tar -xjf "$WORK/sherpa-onnx-moonshine-base-en-int8.tar.bz2" -C "$WORK"
+M="$WORK/sherpa-onnx-moonshine-base-en-int8"
+cp "$M/preprocess.onnx" "$M/encode.int8.onnx" "$M/uncached_decode.int8.onnx" "$M/cached_decode.int8.onnx" "$M/tokens.txt" "$OUT/moonshine/"
 
 cp "$WORK/ggml-base-q5_1.bin" "$OUT/whisper/ggml-base-q5_1.bin"
 cp "$WORK/ggml-base.en-q5_1.bin" "$OUT/whisper/ggml-base.en-q5_1.bin"

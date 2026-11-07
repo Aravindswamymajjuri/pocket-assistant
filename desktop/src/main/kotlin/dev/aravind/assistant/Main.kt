@@ -419,6 +419,51 @@ private fun selfTest(report: File): Int {
         check(normal.second >= 10 && normal.third == 0) { text }
         text
     }
+    step("moonshine vs whisper speed and accuracy") {
+        val root = AppPaths.models.absolutePath
+        val moon = com.k2fsa.sherpa.onnx.OfflineRecognizer(
+            com.k2fsa.sherpa.onnx.OfflineRecognizerConfig.builder()
+                .setFeatureConfig(com.k2fsa.sherpa.onnx.FeatureConfig.builder().setSampleRate(SAMPLE_RATE).setFeatureDim(80).build())
+                .setOfflineModelConfig(
+                    com.k2fsa.sherpa.onnx.OfflineModelConfig.builder()
+                        .setMoonshine(
+                            com.k2fsa.sherpa.onnx.OfflineMoonshineModelConfig.builder()
+                                .setPreprocessor("$root/moonshine/preprocess.onnx")
+                                .setEncoder("$root/moonshine/encode.int8.onnx")
+                                .setUncachedDecoder("$root/moonshine/uncached_decode.int8.onnx")
+                                .setCachedDecoder("$root/moonshine/cached_decode.int8.onnx")
+                                .build(),
+                        )
+                        .setTokens("$root/moonshine/tokens.txt")
+                        .setNumThreads(4)
+                        .build(),
+                )
+                .build(),
+        )
+        val lines = listOf("Set an alarm for 7:15 PM today.", "Send a message to Daddy saying I will be late.", "Turn off mobile data.")
+        val report = StringBuilder()
+        var moonTotal = 0L
+        var whisperTotal = 0L
+        for (line in lines) {
+            val audio = engines.synthesize(line, false)
+            val speech = resample(audio.samples, audio.sampleRate)
+            var started = System.nanoTime()
+            val stream = moon.createStream()
+            stream.acceptWaveform(speech, SAMPLE_RATE)
+            moon.decode(stream)
+            val moonText = moon.getResult(stream).text.trim()
+            stream.release()
+            moonTotal += (System.nanoTime() - started) / 1_000_000
+            started = System.nanoTime()
+            val whisperText = WhisperCpp.transcribe(speech, "en")
+            whisperTotal += (System.nanoTime() - started) / 1_000_000
+            report.append(" [moonshine '$moonText' | whisper '$whisperText']")
+            val alarm = dev.aravind.assistant.policy.CommandRouter.route(moonText)
+            if (line.startsWith("Set an alarm")) check(alarm?.long("minute") == 15L) { "moonshine alarm text didn't parse: $moonText" }
+        }
+        moon.release()
+        "moonshine ${moonTotal}ms, whisper ${whisperTotal}ms for 3 phrases$report"
+    }
     step("vad") {
         val vad = engines.newVad()
         val window = 512

@@ -2,6 +2,11 @@ package dev.aravind.assistant
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -14,6 +19,10 @@ import android.media.audiofx.NoiseSuppressor
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.KeywordSpotter
 import com.k2fsa.sherpa.onnx.KeywordSpotterConfig
+import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineMoonshineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
@@ -52,7 +61,7 @@ private const val MAX_WAKE_SAMPLES = SAMPLE_RATE * 3
 
 /** Voice models ship in the APK and are unpacked to private storage on first use. */
 object VoiceAssets {
-    private const val VERSION = "4"
+    private const val VERSION = "5"
 
     fun dir(context: Context) = File(context.noBackupFilesDir, "voice")
 
@@ -144,9 +153,43 @@ class VoiceEngines(context: Context) {
     private val english by lazy { piper("piper") }
     private val hindi by lazy { piper("piper-hi") }
 
-    fun transcribe(samples: FloatArray, language: String, prompt: String): String {
+    private val moonshine by lazy {
+        OfflineRecognizer(
+            config = OfflineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
+                modelConfig = OfflineModelConfig(
+                    moonshine = OfflineMoonshineModelConfig(
+                        preprocessor = "$root/moonshine/preprocess.onnx",
+                        encoder = "$root/moonshine/encode.int8.onnx",
+                        uncachedDecoder = "$root/moonshine/uncached_decode.int8.onnx",
+                        cachedDecoder = "$root/moonshine/cached_decode.int8.onnx",
+                    ),
+                    tokens = "$root/moonshine/tokens.txt",
+                    numThreads = 4,
+                ),
+            ),
+        )
+    }
+
+    private fun moonshineText(samples: FloatArray): String {
+        val stream = moonshine.createStream()
+        try {
+            stream.acceptWaveform(samples, SAMPLE_RATE)
+            moonshine.decode(stream)
+            return moonshine.getResult(stream).text.trim()
+        } finally {
+            stream.release()
+        }
+    }
+
+    /** English uses Moonshine unless Whisper was chosen. Hindi, Telugu, and Auto use Whisper. */
+    fun transcribe(samples: FloatArray, language: String, prompt: String, engine: String = "auto"): String {
+        val audio = Audio.normalized(samples)
+        if (language == "en" && engine != SpeechEngine.WHISPER) {
+            runCatching { moonshineText(audio) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+        }
         val model = if (language == "en") "ggml-base.en-q5_1.bin" else "ggml-base-q5_1.bin"
-        return WhisperCpp.transcribe("$root/whisper/$model", Audio.normalized(samples), language, prompt)
+        return WhisperCpp.transcribe("$root/whisper/$model", audio, language, prompt)
     }
 
     /** The small English model, several times faster, used only to check for the wake word. */
@@ -212,6 +255,101 @@ object WhisperCpp {
     fun release() {
         handles.values.filter { it != 0L }.forEach { nativeFree(it) }
         handles.clear()
+    }
+}
+
+object SpeechEngine {
+    const val AUTO = "auto"
+    const val GOOGLE = "google"
+    const val MOONSHINE = "moonshine"
+    const val WHISPER = "whisper"
+}
+
+/**
+ * Android's built-in recognizer. The on-device version never uses the internet.
+ * The standard version prefers offline, but may go online if the offline pack is missing.
+ */
+object GoogleStt {
+    sealed interface Result {
+        data class Text(val text: String) : Result
+        data class Unavailable(val reason: String) : Result
+        data object Nothing : Result
+    }
+
+    /** Set when Google fails for a reason that won't fix itself, so it isn't retried until restart. */
+    @Volatile
+    var brokenThisSession = false
+
+    fun onDeviceAvailable(context: Context) = SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+
+    fun anyAvailable(context: Context) = onDeviceAvailable(context) || SpeechRecognizer.isRecognitionAvailable(context)
+
+    fun inUse(context: Context): Boolean {
+        if (brokenThisSession) return false
+        return when (Features.speechEngine(context)) {
+            SpeechEngine.GOOGLE -> anyAvailable(context)
+            SpeechEngine.AUTO -> onDeviceAvailable(context)
+            else -> false
+        }
+    }
+
+    private fun tag(language: String) = when (language) {
+        "hi" -> "hi-IN"
+        "te" -> "te-IN"
+        else -> "en-IN"
+    }
+
+    suspend fun listen(context: Context, language: String): Result = withContext(Dispatchers.Main) {
+        val onDevice = onDeviceAvailable(context)
+        val recognizer = if (onDevice) {
+            SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+        } else {
+            SpeechRecognizer.createSpeechRecognizer(context)
+        }
+        val done = CompletableDeferred<Result>()
+        recognizer.setRecognitionListener(object : RecognitionListener {
+            override fun onResults(results: Bundle?) {
+                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                done.complete(if (text.isBlank()) Result.Nothing else Result.Text(text))
+            }
+
+            override fun onError(error: Int) {
+                done.complete(
+                    when (error) {
+                        SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> Result.Nothing
+                        else -> {
+                            brokenThisSession = true
+                            Result.Unavailable("error $error")
+                        }
+                    },
+                )
+            }
+
+            override fun onReadyForSpeech(params: Bundle?) = Unit
+            override fun onBeginningOfSpeech() = Unit
+            override fun onRmsChanged(rmsdB: Float) = Unit
+            override fun onBufferReceived(buffer: ByteArray?) = Unit
+            override fun onEndOfSpeech() {
+                AssistantRuntime.status.value = "Working"
+            }
+            override fun onPartialResults(partialResults: Bundle?) = Unit
+            override fun onEvent(eventType: Int, params: Bundle?) = Unit
+        })
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, tag(language))
+            .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
+        try {
+            recognizer.startListening(intent)
+            withTimeoutOrNull(15_000) { done.await() } ?: Result.Nothing
+        } catch (e: Exception) {
+            brokenThisSession = true
+            Result.Unavailable(e.javaClass.simpleName)
+        } finally {
+            recognizer.destroy()
+        }
     }
 }
 
@@ -292,8 +430,9 @@ class VoiceLoop(
 
     /** Language is a Whisper code. Leave it null to use the language chosen in Control Center. */
     fun understand(samples: FloatArray, language: String? = null): Heard {
-        val text = engines.transcribe(samples, language ?: Features.language(context), prompt())
-        val verified = VoiceId.matches(context, engines.embedding(samples))
+        val text = engines.transcribe(samples, language ?: Features.language(context), prompt(), Features.speechEngine(context))
+        // Voice ID adds a delay, so it only runs once a voice has been saved.
+        val verified = VoiceId.isEnrolled(context) && VoiceId.matches(context, engines.embedding(samples))
         return Heard(text, verified, samples)
     }
 
@@ -361,9 +500,16 @@ class VoiceLoop(
                 for (i in 0 until count) floats[i] = shorts[i] / 32768f
                 val frame = floats.copyOf(count)
 
+                if (collector == null && wantListen && !wantCapture && GoogleStt.inUse(context)) {
+                    listenRequested.set(false)
+                    busy = true
+                    close()
+                    scope.launch(Dispatchers.Default) { listenWithGoogle() }
+                    continue
+                }
                 if (collector == null && (wantCapture || wantListen)) {
                     listenRequested.set(false)
-                    collector = Collector(engines.newVad())
+                    collector = Collector(engines.newVad(0.5f))
                     AssistantRuntime.status.value = "Listening"
                 }
                 val active = collector
@@ -415,6 +561,30 @@ class VoiceLoop(
             watcher?.close()
             wakeStream?.release()
             close()
+        }
+    }
+
+    /** Google listens and returns text as soon as you stop. The app's microphone stays closed meanwhile. */
+    private suspend fun listenWithGoogle() {
+        try {
+            AssistantRuntime.status.value = "Listening"
+            when (val result = GoogleStt.listen(context, Features.language(context))) {
+                is GoogleStt.Result.Text -> {
+                    AssistantRuntime.status.value = "Working"
+                    val name = Features.wakeName(context)
+                    val rest = WakeName.heardIn(result.text, name)
+                    val command = if (rest.isNullOrBlank()) result.text else rest
+                    if (rest != "" && command.isNotBlank()) onCommand(Heard(command, false, FloatArray(0)))
+                }
+                is GoogleStt.Result.Unavailable -> {
+                    AssistantRuntime.say("Google speech isn't available (${result.reason}), so I'm using Moonshine")
+                    listenRequested.set(true)
+                }
+                GoogleStt.Result.Nothing -> Unit
+            }
+        } finally {
+            busy = false
+            if (AssistantRuntime.armed.value) AssistantRuntime.status.value = "Ready"
         }
     }
 

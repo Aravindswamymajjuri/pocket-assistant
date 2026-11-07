@@ -2,6 +2,7 @@ package dev.aravind.assistant
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityService
+import android.app.AlarmManager
 import android.app.KeyguardManager
 import android.app.NotificationManager
 import android.bluetooth.BluetoothManager
@@ -85,7 +86,7 @@ class ToolExecutor(private val context: Context) {
         return "Opening ${match.loadLabel(pm)}"
     }
 
-    private fun setAlarm(call: ToolCall): String {
+    private suspend fun setAlarm(call: ToolCall): String {
         val hour = call.long("hour").toInt()
         val minute = call.long("minute").toInt()
         val intent = Intent(AlarmClock.ACTION_SET_ALARM)
@@ -99,7 +100,15 @@ class ToolExecutor(private val context: Context) {
             return "Your clock app didn't accept the alarm"
         }
         val hour12 = if (hour % 12 == 0) 12 else hour % 12
-        return "Alarm set for %d:%02d %s".format(hour12, minute, if (hour < 12) "AM" else "PM")
+        val spoken = "%d:%02d %s".format(hour12, minute, if (hour < 12) "AM" else "PM")
+        // Checks that the clock app really saved it, instead of trusting that it did.
+        repeat(8) {
+            delay(400)
+            val next = context.getSystemService(AlarmManager::class.java).nextAlarmClock ?: return@repeat
+            val time = java.util.Calendar.getInstance().apply { timeInMillis = next.triggerTime }
+            if (time.get(java.util.Calendar.HOUR_OF_DAY) == hour && time.get(java.util.Calendar.MINUTE) == minute) return "Alarm set for $spoken"
+        }
+        return "I asked your clock app to set an alarm for $spoken. Please check that it appears"
     }
 
     private fun setTimer(seconds: Int): String {
