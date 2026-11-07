@@ -442,10 +442,36 @@ object WakeName {
     fun phrase(name: String): String = "HEY ${name.trim().uppercase()}"
 
     /** Builds the keyword line the engine expects, or null if the name can't be tokenized. */
-    fun keywordLine(tokenizer: BpeTokenizer, name: String): String? {
-        val tokens = tokenizer.encode(phrase(name)) ?: return null
-        return "${tokens.joinToString(" ")} :3.0 #0.15 @${phrase(name).replace(' ', '_')}"
+    fun keywordLine(tokenizer: BpeTokenizer, name: String): String? = line(tokenizer, phrase(name), 3.0f, 0.15f)
+
+    private fun line(tokenizer: BpeTokenizer, phrase: String, boost: Float, threshold: Float): String? {
+        val tokens = tokenizer.encode(phrase) ?: return null
+        return "${tokens.joinToString(" ")} :$boost #$threshold @${phrase.replace(' ', '_')}"
     }
+
+    /**
+     * Every way of calling the assistant that the fast detector should accept, joined with "/".
+     * Higher sensitivity wakes more easily, but may also wake by mistake more often.
+     */
+    fun keywords(tokenizer: BpeTokenizer, name: String, sensitivity: WakeSensitivity): String? {
+        val upper = name.trim().uppercase()
+        val greetings = when (sensitivity) {
+            WakeSensitivity.HIGH -> listOf("HEY", "HI", "HELLO", "OK", "OKAY", "A")
+            WakeSensitivity.NORMAL -> listOf("HEY", "HI", "HELLO", "OK")
+            WakeSensitivity.LOW -> listOf("HEY")
+        }
+        val phrases = greetings.map { "$it $upper" }.toMutableList()
+        // The name on its own only for longer names, which are less likely to come up by chance.
+        if (sensitivity == WakeSensitivity.HIGH && upper.replace(" ", "").length >= 5) phrases += upper
+        val lines = phrases.mapNotNull { line(tokenizer, it, sensitivity.boost, sensitivity.threshold) }
+        return lines.takeIf { it.isNotEmpty() }?.joinToString("/")
+    }
+}
+
+enum class WakeSensitivity(val boost: Float, val threshold: Float) {
+    LOW(2.0f, 0.25f),
+    NORMAL(3.0f, 0.15f),
+    HIGH(4.0f, 0.08f),
 }
 
 enum class Script { LATIN, DEVANAGARI, TELUGU }

@@ -8,6 +8,7 @@ import dev.aravind.assistant.policy.AuditChain
 import dev.aravind.assistant.policy.Category
 import dev.aravind.assistant.policy.VoiceMatch
 import dev.aravind.assistant.policy.WakeName
+import dev.aravind.assistant.policy.WakeSensitivity
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Dimension
@@ -379,6 +380,44 @@ private fun selfTest(report: File): Int {
         while (engines.spotter.isReady(stream)) engines.spotter.decode(stream)
         stream.release()
         "model and name tokens load"
+    }
+    // Plays spoken wake phrases into the real detector, the way the microphone would.
+    fun detects(phrase: String, name: String, sensitivity: WakeSensitivity): Boolean {
+        val audio = engines.synthesize(phrase, false)
+        val speech = resample(audio.samples, audio.sampleRate)
+        val silence = FloatArray(SAMPLE_RATE)
+        val stream = engines.spotter.createStream(engines.wakeKeywords(name, sensitivity))
+        try {
+            for (chunk in listOf(silence, speech, silence)) {
+                var offset = 0
+                while (offset < chunk.size) {
+                    val end = minOf(offset + 1600, chunk.size)
+                    stream.acceptWaveform(chunk.copyOfRange(offset, end), SAMPLE_RATE)
+                    offset = end
+                    while (engines.spotter.isReady(stream)) {
+                        engines.spotter.decode(stream)
+                        if (engines.spotter.getResult(stream).keyword.isNotBlank()) return true
+                    }
+                }
+            }
+            return false
+        } finally {
+            stream.release()
+        }
+    }
+    step("wake word hears spoken names") {
+        val cases = listOf(
+            Triple("Hey Assistant.", "Assistant", true),
+            Triple("Hey Nova.", "Nova", true),
+            Triple("Hi Nova.", "Nova", true),
+            Triple("Hey Jarvis.", "Jarvis", true),
+            Triple("The weather is nice today.", "Nova", false),
+        )
+        val results = WakeSensitivity.entries.associateWith { level ->
+            cases.count { (phrase, name, expected) -> detects(phrase, name, level) == expected }
+        }
+        check(results.getValue(WakeSensitivity.HIGH) >= cases.size - 1) { "results: $results" }
+        results.entries.joinToString { "${it.key}=${it.value}/${cases.size} correct" }
     }
     step("vad") {
         val vad = engines.newVad()

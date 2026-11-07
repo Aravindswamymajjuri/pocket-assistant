@@ -73,6 +73,7 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import dev.aravind.assistant.policy.Category
 import dev.aravind.assistant.policy.WakeName
+import dev.aravind.assistant.policy.WakeSensitivity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -532,6 +533,20 @@ private fun HomeScreen(activity: FragmentActivity) {
                 } else {
                     OutlinedButton(onClick = onClick) { Text(label) }
                 }
+            }
+        }
+        val sensitivity = remember(refreshKey) { Features.wakeSensitivity(activity) }
+        Text("Wake sensitivity", style = MaterialTheme.typography.bodyLarge)
+        Text("Higher wakes more easily, but may also wake by mistake", style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf(WakeSensitivity.LOW to "Low", WakeSensitivity.NORMAL to "Normal", WakeSensitivity.HIGH to "High").forEach { (level, label) ->
+                val onClick = {
+                    Features.setWakeSensitivity(activity, level)
+                    AssistantService.instance?.onWakeNameChanged()
+                    refresh++
+                    Unit
+                }
+                if (level == sensitivity) Button(onClick = onClick) { Text(label) } else OutlinedButton(onClick = onClick) { Text(label) }
             }
         }
         ToggleRow("Wake word", "The mic stays open while this is on", wakeOn) { on ->

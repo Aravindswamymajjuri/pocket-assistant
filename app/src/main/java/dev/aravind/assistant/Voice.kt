@@ -30,6 +30,7 @@ import dev.aravind.assistant.policy.BpeTokenizer
 import dev.aravind.assistant.policy.SpeechPrompt
 import dev.aravind.assistant.policy.VoiceMatch
 import dev.aravind.assistant.policy.WakeName
+import dev.aravind.assistant.policy.WakeSensitivity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,11 +48,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private const val SAMPLE_RATE = 16_000
 private const val MIN_WAKE_SAMPLES = SAMPLE_RATE * 2 / 5
-private const val MAX_WAKE_SAMPLES = SAMPLE_RATE * 4
+private const val MAX_WAKE_SAMPLES = SAMPLE_RATE * 3
 
 /** Voice models ship in the APK and are unpacked to private storage on first use. */
 object VoiceAssets {
-    private const val VERSION = "3"
+    private const val VERSION = "4"
 
     fun dir(context: Context) = File(context.noBackupFilesDir, "voice")
 
@@ -95,15 +96,17 @@ class VoiceEngines(context: Context) {
                     numThreads = 1,
                 ),
                 keywordsFile = "$root/kws/keywords.txt",
+                numTrailingBlanks = 1,
             ),
         )
     }
 
-    fun newVad(): Vad = Vad(
+    /** Wake checks end a phrase after a short pause. Commands wait longer, so they aren't cut off. */
+    fun newVad(minSilence: Float = 0.7f): Vad = Vad(
         config = VadModelConfig(
             sileroVadModelConfig = SileroVadModelConfig(
                 model = "$root/vad/silero_vad.onnx",
-                minSilenceDuration = 0.7f,
+                minSilenceDuration = minSilence,
                 minSpeechDuration = 0.25f,
                 maxSpeechDuration = 14f,
             ),
@@ -115,8 +118,9 @@ class VoiceEngines(context: Context) {
     fun wakeKeywords(context: Context): String {
         val vocab = File(root, "kws/bpe.vocab")
         val tokenizer = BpeTokenizer.parse(vocab.readLines().asSequence())
-        return WakeName.keywordLine(tokenizer, Features.wakeName(context))
-            ?: requireNotNull(WakeName.keywordLine(tokenizer, WakeName.DEFAULT))
+        val sensitivity = Features.wakeSensitivity(context)
+        return WakeName.keywords(tokenizer, Features.wakeName(context), sensitivity)
+            ?: requireNotNull(WakeName.keywords(tokenizer, WakeName.DEFAULT, sensitivity))
     }
 
     private val extractor by lazy {
@@ -139,8 +143,14 @@ class VoiceEngines(context: Context) {
     private val english by lazy { piper("piper") }
     private val hindi by lazy { piper("piper-hi") }
 
-    fun transcribe(samples: FloatArray, language: String, prompt: String): String =
-        WhisperCpp.transcribe(root, Audio.normalized(samples), language, prompt)
+    fun transcribe(samples: FloatArray, language: String, prompt: String): String {
+        val model = if (language == "en") "ggml-base.en-q5_1.bin" else "ggml-base-q5_1.bin"
+        return WhisperCpp.transcribe("$root/whisper/$model", Audio.normalized(samples), language, prompt)
+    }
+
+    /** The small English model, several times faster, used only to check for the wake word. */
+    fun quickTranscribe(samples: FloatArray, prompt: String): String =
+        WhisperCpp.transcribe("$root/whisper/ggml-tiny.en-q5_1.bin", Audio.normalized(samples), "en", prompt)
 
     fun embedding(samples: FloatArray): FloatArray? {
         val stream: OnlineStream = extractor.createStream()
@@ -176,8 +186,8 @@ object Audio {
 
 /** whisper.cpp through a small JNI layer. English uses a more accurate English-only model. */
 object WhisperCpp {
-    private var handle = 0L
-    private var loaded = ""
+    // Each model stays loaded, so switching between the wake check and commands costs nothing.
+    private val handles = HashMap<String, Long>()
 
     init {
         System.loadLibrary("whisperjni")
@@ -188,22 +198,19 @@ object WhisperCpp {
     private external fun nativeFree(handle: Long)
 
     @Synchronized
-    fun transcribe(root: String, samples: FloatArray, language: String, prompt: String): String {
-        val model = "$root/whisper/" + if (language == "en") "ggml-base.en-q5_1.bin" else "ggml-base-q5_1.bin"
-        if (loaded != model) {
-            release()
-            handle = nativeInit(model)
-            loaded = model
+    fun transcribe(model: String, samples: FloatArray, language: String, prompt: String): String {
+        val handle = handles.getOrPut(model) { nativeInit(model) }
+        if (handle == 0L) {
+            handles.remove(model)
+            error("The speech model failed to load")
         }
-        check(handle != 0L) { "The speech model failed to load" }
         return nativeTranscribe(handle, samples, language, prompt, 4).trim()
     }
 
     @Synchronized
     fun release() {
-        if (handle != 0L) nativeFree(handle)
-        handle = 0L
-        loaded = ""
+        handles.values.filter { it != 0L }.forEach { nativeFree(it) }
+        handles.clear()
     }
 }
 
@@ -327,7 +334,7 @@ class VoiceLoop(
         var wakeStream: OnlineStream? = null
         var collector: Collector? = null
         var watcher: Collector? = null
-        var wakeGain = 3f
+        var wakeGain = 1.5f
         try {
             while (currentCoroutineContext().isActive) {
                 val wantCapture = captureRequest != null
@@ -377,7 +384,8 @@ class VoiceLoop(
                     val stream = wakeStream ?: engines.spotter.createStream(engines.wakeKeywords(context)).also { wakeStream = it }
                     // Keeps speech near a steady level, however far away you are.
                     val level = Audio.rms(frame)
-                    if (level > 0.002f) wakeGain = (wakeGain * 0.9f + (0.08f / level).coerceIn(1f, 12f) * 0.1f)
+                    // A gentle boost for quiet speech. Strong boosts distort the voice and hurt detection.
+                    if (level > 0.002f) wakeGain = (wakeGain * 0.9f + (0.05f / level).coerceIn(1f, 3f) * 0.1f)
                     stream.acceptWaveform(Audio.boosted(frame, wakeGain), SAMPLE_RATE)
                     var spotted = false
                     while (engines.spotter.isReady(stream)) {
@@ -395,7 +403,7 @@ class VoiceLoop(
                         continue
                     }
                     // A second detector: Whisper checks short phrases, which handles names and accents better.
-                    val check = watcher ?: Collector(engines.newVad()).also { watcher = it }
+                    val check = watcher ?: Collector(engines.newVad(0.3f)).also { watcher = it }
                     val phrase = check.feed(frame)
                     if (phrase != null || check.expired()) check.restart()
                     if (phrase != null && phrase.size in MIN_WAKE_SAMPLES..MAX_WAKE_SAMPLES && !checking) checkForName(phrase)
@@ -418,13 +426,17 @@ class VoiceLoop(
         checking = true
         scope.launch(Dispatchers.Default) {
             try {
-                val text = engines.transcribe(samples, "en", prompt())
-                val rest = WakeName.heardIn(text, Features.wakeName(context)) ?: return@launch
+                val name = Features.wakeName(context)
+                val text = engines.quickTranscribe(samples, "Hey $name.")
+                val rest = WakeName.heardIn(text, name) ?: return@launch
                 wakeUp()
                 if (rest.contains(' ')) {
                     busy = true
                     try {
-                        onCommand(Heard(rest, VoiceId.matches(context, engines.embedding(samples)), samples))
+                        // The quick model only checks for the name. The command is heard again with the accurate one.
+                        val heard = understand(samples)
+                        val command = WakeName.heardIn(heard.text, name)?.takeIf { it.contains(' ') } ?: rest
+                        onCommand(heard.copy(text = command))
                     } finally {
                         busy = false
                         if (AssistantRuntime.armed.value) AssistantRuntime.status.value = "Ready"

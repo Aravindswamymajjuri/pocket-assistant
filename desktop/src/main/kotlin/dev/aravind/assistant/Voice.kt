@@ -26,6 +26,7 @@ import dev.aravind.assistant.policy.SpeechPrompt
 import dev.aravind.assistant.policy.Tool
 import dev.aravind.assistant.policy.VoiceMatch
 import dev.aravind.assistant.policy.WakeName
+import dev.aravind.assistant.policy.WakeSensitivity
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -85,14 +86,20 @@ class VoiceEngines {
                         .build(),
                 )
                 .setKeywordsFile("$root/kws/keywords.txt")
+                .setNumTrailingBlanks(1)
                 .build(),
         )
     }
 
     fun wakeKeywords(): String {
         val tokenizer = BpeTokenizer.parse(File(root, "kws/bpe.vocab").readLines().asSequence())
-        return WakeName.keywordLine(tokenizer, Features.wakeName())
-            ?: requireNotNull(WakeName.keywordLine(tokenizer, WakeName.DEFAULT))
+        return wakeKeywords(Features.wakeName(), WakeSensitivity.HIGH)
+    }
+
+    fun wakeKeywords(name: String, sensitivity: WakeSensitivity): String {
+        val tokenizer = BpeTokenizer.parse(File(root, "kws/bpe.vocab").readLines().asSequence())
+        return WakeName.keywords(tokenizer, name, sensitivity)
+            ?: requireNotNull(WakeName.keywords(tokenizer, WakeName.DEFAULT, sensitivity))
     }
 
     fun newVad(): Vad = Vad(

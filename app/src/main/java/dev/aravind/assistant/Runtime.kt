@@ -13,6 +13,7 @@ import dev.aravind.assistant.policy.Category
 import dev.aravind.assistant.policy.ConfirmationAuthority
 import dev.aravind.assistant.policy.OutboundRateLimiter
 import dev.aravind.assistant.policy.WakeName
+import dev.aravind.assistant.policy.WakeSensitivity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
@@ -109,6 +110,10 @@ object Features {
     fun setWakeWord(context: Context, value: Boolean) = prefs(context).edit().putBoolean("wake", value).apply()
     fun aiCalls(context: Context) = prefs(context).getBoolean("calls", false)
     fun setAiCalls(context: Context, value: Boolean) = prefs(context).edit().putBoolean("calls", value).apply()
+    fun wakeSensitivity(context: Context): WakeSensitivity =
+        runCatching { WakeSensitivity.valueOf(prefs(context).getString("sensitivity", null) ?: "HIGH") }.getOrDefault(WakeSensitivity.HIGH)
+    fun setWakeSensitivity(context: Context, value: WakeSensitivity) = prefs(context).edit().putString("sensitivity", value.name).apply()
+
     fun wakeName(context: Context): String = prefs(context).getString("name", null) ?: WakeName.DEFAULT
     fun setWakeName(context: Context, value: String) = prefs(context).edit().putString("name", value.trim()).apply()
 
