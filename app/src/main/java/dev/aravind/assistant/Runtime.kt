@@ -124,8 +124,9 @@ object Features {
     fun setWakeName(context: Context, value: String) = prefs(context).edit().putString("name", value.trim()).apply()
 
     /** The Whisper language code: en, hi, te, or auto. */
-    fun language(context: Context): String = prefs(context).getString("language", null) ?: "en"
-    fun setLanguage(context: Context, value: String) = prefs(context).edit().putString("language", value).apply()
+    /** The assistant understands English only. */
+    @Suppress("UNUSED_PARAMETER")
+    fun language(context: Context): String = "en"
 
     fun autoPause(context: Context) = prefs(context).getBoolean("auto_pause", true)
     fun setAutoPause(context: Context, value: Boolean) = prefs(context).edit().putBoolean("auto_pause", value).apply()

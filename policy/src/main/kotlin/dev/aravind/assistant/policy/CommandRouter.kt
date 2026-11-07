@@ -12,11 +12,8 @@ object CommandRouter {
     )
     private val messageStart = Regex("(?i)^(?:please )?(?:send|message|msg|text|whats ?app|sms|tell|write)\\b")
 
-    private val localStops = setOf("रुको", "रुक जाओ", "बंद करो", "बंद", "ఆపు", "ఆగు", "ఆపండి", "ఆగండి")
-
     fun isStop(text: String): Boolean {
-        val t = text.trim().trimEnd('.', '!', '।')
-        return stop.matches(t) || t in localStops
+        return stop.matches(text.trim().trimEnd('.', '!'))
     }
 
     /**

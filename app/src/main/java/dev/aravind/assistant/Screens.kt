@@ -519,22 +519,6 @@ private fun HomeScreen(activity: FragmentActivity) {
             },
             Modifier.fillMaxWidth(),
         ) { Text("Save name") }
-        val language = remember(refreshKey) { Features.language(activity) }
-        Text("Speaking language", style = MaterialTheme.typography.bodyLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf("en" to "English", "hi" to "Hindi", "te" to "Telugu", "auto" to "Auto").forEach { (code, label) ->
-                val onClick = {
-                    Features.setLanguage(activity, code)
-                    refresh++
-                    Unit
-                }
-                if (code == language) {
-                    Button(onClick = onClick) { Text(label) }
-                } else {
-                    OutlinedButton(onClick = onClick) { Text(label) }
-                }
-            }
-        }
         val engine = remember(refreshKey) { Features.speechEngine(activity) }
         val googleOnDevice = remember(refreshKey) { GoogleStt.onDeviceAvailable(activity) }
         Text("Speech recognition", style = MaterialTheme.typography.bodyLarge)
@@ -557,8 +541,8 @@ private fun HomeScreen(activity: FragmentActivity) {
             when (engine) {
                 SpeechEngine.GOOGLE -> "Most accurate for Indian English. Without its offline pack, Google may use the internet"
                 SpeechEngine.MOONSHINE -> "Open-source and fast. English only"
-                SpeechEngine.WHISPER -> "Open-source. Slower, but understands Hindi and Telugu"
-                else -> "Uses Google on-device if available, otherwise Moonshine. Hindi and Telugu use Whisper"
+                SpeechEngine.WHISPER -> "Open-source. Slower than Moonshine"
+                else -> "Uses Google on-device if available, otherwise Moonshine"
             },
             style = MaterialTheme.typography.bodySmall,
         )

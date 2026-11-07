@@ -12,8 +12,8 @@ Included:
 - Control Center for tools, permissions, battery, model, voice, calls, and security warnings
 - Room database encrypted with SQLCipher, tamper-evident audit log, and full data wipe
 - A wake word using a name you set in the app, Silero VAD, and Voice ID through sherpa-onnx
-- whisper.cpp speech-to-text in English, Hindi, Telugu, or auto-detect
-- Piper voices for English and Hindi, and Android's voice for Telugu
+- English speech recognition with Google on-device, Moonshine, or whisper.cpp
+- Piper voice replies
 - Gemma through LiteRT-LM from a typed path, a picked file, or a private copy
 - Apps, alarms, timers, flashlight, volume, brightness, Wi-Fi, Bluetooth, Do Not Disturb, lock, search, back, home, scroll, tap
 - Ring, vibrate, and silent modes, plus mobile data, hotspot, airplane mode, location, dark mode, power saving, auto-rotate, and screen recording through Quick Settings tiles
@@ -23,7 +23,7 @@ Included:
 Known limits:
 - Voice ID can be fooled by recordings and cloned voices, so spoken codes and fingerprint fallback stay on
 - AI calling depends on this phone letting the app use the mic during a call
-- Whisper base is less accurate for Telugu and Hindi than for English, and slower than tiny
+- English only
 - Wake names must use English letters, because the wake-word model is English
 - Wi-Fi and Bluetooth use the settings screen, because Android blocks direct switching for this app
 - There is no allow-list of apps yet, only a block list

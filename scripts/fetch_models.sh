@@ -14,7 +14,7 @@ WAKE_PHRASES=${WAKE_PHRASES:-"HEY ASSISTANT"}
 
 mkdir -p "$WORK" app/libs
 rm -rf "$OUT"
-mkdir -p "$OUT"/moonshine "$OUT"/kws "$OUT"/vad "$OUT"/whisper "$OUT"/piper "$OUT"/piper-hi "$OUT"/speaker
+mkdir -p "$OUT"/moonshine "$OUT"/kws "$OUT"/vad "$OUT"/whisper "$OUT"/piper "$OUT"/speaker
 
 if [ ! -d app/src/main/cpp/whisper.cpp ]; then
   git clone --quiet --depth 1 -b "$WHISPER_CPP_TAG" https://github.com/ggml-org/whisper.cpp app/src/main/cpp/whisper.cpp
@@ -31,11 +31,9 @@ get "$BASE/v$SHERPA_VERSION/sherpa-onnx-$SHERPA_VERSION.aar"
 get "$BASE/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
 get "$BASE/asr-models/silero_vad.onnx"
 get "$BASE/asr-models/sherpa-onnx-moonshine-base-en-int8.tar.bz2"
-get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
 get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin"
 get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin"
 get "$BASE/tts-models/vits-piper-en_US-lessac-medium.tar.bz2"
-get "$BASE/tts-models/vits-piper-hi_IN-pratham-medium.tar.bz2"
 get "$BASE/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
 
 echo "--- SHA-256 of downloads"
@@ -85,7 +83,6 @@ tar -xjf "$WORK/sherpa-onnx-moonshine-base-en-int8.tar.bz2" -C "$WORK"
 M="$WORK/sherpa-onnx-moonshine-base-en-int8"
 cp "$M/preprocess.onnx" "$M/encode.int8.onnx" "$M/uncached_decode.int8.onnx" "$M/cached_decode.int8.onnx" "$M/tokens.txt" "$OUT/moonshine/"
 
-cp "$WORK/ggml-base-q5_1.bin" "$OUT/whisper/ggml-base-q5_1.bin"
 cp "$WORK/ggml-base.en-q5_1.bin" "$OUT/whisper/ggml-base.en-q5_1.bin"
 cp "$WORK/ggml-tiny.en-q5_1.bin" "$OUT/whisper/ggml-tiny.en-q5_1.bin"
 
@@ -94,11 +91,6 @@ P="$WORK/vits-piper-en_US-lessac-medium"
 cp "$P/en_US-lessac-medium.onnx" "$OUT/piper/model.onnx"
 cp "$P/tokens.txt" "$OUT/piper/tokens.txt"
 cp -r "$P/espeak-ng-data" "$OUT/piper/espeak-ng-data"
-
-tar -xjf "$WORK/vits-piper-hi_IN-pratham-medium.tar.bz2" -C "$WORK"
-H="$WORK/vits-piper-hi_IN-pratham-medium"
-cp "$H/hi_IN-pratham-medium.onnx" "$OUT/piper-hi/model.onnx"
-cp "$H/tokens.txt" "$OUT/piper-hi/tokens.txt"
 
 cp "$WORK/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx" "$OUT/speaker/model.onnx"
 du -sh "$OUT"/* app/libs/*

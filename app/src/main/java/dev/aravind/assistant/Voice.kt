@@ -61,7 +61,7 @@ private const val MAX_WAKE_SAMPLES = SAMPLE_RATE * 3
 
 /** Voice models ship in the APK and are unpacked to private storage on first use. */
 object VoiceAssets {
-    private const val VERSION = "5"
+    private const val VERSION = "6"
 
     fun dir(context: Context) = File(context.noBackupFilesDir, "voice")
 
@@ -151,7 +151,6 @@ class VoiceEngines(context: Context) {
     )
 
     private val english by lazy { piper("piper") }
-    private val hindi by lazy { piper("piper-hi") }
 
     private val moonshine by lazy {
         OfflineRecognizer(
@@ -182,14 +181,13 @@ class VoiceEngines(context: Context) {
         }
     }
 
-    /** English uses Moonshine unless Whisper was chosen. Hindi, Telugu, and Auto use Whisper. */
+    /** Moonshine is used unless Whisper was chosen. Whisper is also the backup if Moonshine fails. */
     fun transcribe(samples: FloatArray, language: String, prompt: String, engine: String = "auto"): String {
         val audio = Audio.normalized(samples)
-        if (language == "en" && engine != SpeechEngine.WHISPER) {
+        if (engine != SpeechEngine.WHISPER) {
             runCatching { moonshineText(audio) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
         }
-        val model = if (language == "en") "ggml-base.en-q5_1.bin" else "ggml-base-q5_1.bin"
-        return WhisperCpp.transcribe("$root/whisper/$model", audio, language, prompt)
+        return WhisperCpp.transcribe("$root/whisper/ggml-base.en-q5_1.bin", audio, "en", prompt)
     }
 
     /** The small English model, several times faster, used only to check for the wake word. */
@@ -207,7 +205,7 @@ class VoiceEngines(context: Context) {
         }
     }
 
-    fun synthesize(text: String, useHindi: Boolean) = (if (useHindi) hindi else english).generate(text, sid = 0, speed = 1.0f)
+    fun synthesize(text: String) = english.generate(text, sid = 0, speed = 1.0f)
 }
 
 /** Quiet phone microphones are a common cause of bad recognition, so levels are corrected here. */
@@ -294,8 +292,6 @@ object GoogleStt {
     }
 
     private fun tag(language: String) = when (language) {
-        "hi" -> "hi-IN"
-        "te" -> "te-IN"
         else -> "en-IN"
     }
 
@@ -715,11 +711,11 @@ class VoiceOutput(private val engines: VoiceEngines, private val loop: () -> Voi
     private val mutex = Mutex()
 
     /** Returns false if Piper couldn't speak, so the caller can use the fallback voice. */
-    suspend fun say(text: String, useHindi: Boolean): Boolean = mutex.withLock {
+    suspend fun say(text: String): Boolean = mutex.withLock {
         withContext(Dispatchers.Default) {
             loop()?.speaking = true
             try {
-                val audio = engines.synthesize(text, useHindi)
+                val audio = engines.synthesize(text)
                 play(audio.samples, audio.sampleRate)
                 true
             } catch (e: Exception) {

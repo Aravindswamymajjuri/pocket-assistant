@@ -22,8 +22,6 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import dev.aravind.assistant.policy.BlockedApps
-import dev.aravind.assistant.policy.Script
-import dev.aravind.assistant.policy.ScriptDetect
 import dev.aravind.assistant.policy.SecretRedactor
 import dev.aravind.assistant.policy.WakeName
 import kotlinx.coroutines.CancellationException
@@ -115,23 +113,10 @@ class AssistantService : Service() {
             .build()
     }
 
-    /** Piper speaks English and Hindi. Telugu uses Android's voice, because no Piper voice is available. */
+    /** Piper speaks every reply. Android's own voice is the backup if Piper fails. */
     private suspend fun speak(text: String) {
         AssistantRuntime.say("Assistant: $text")
-        val script = ScriptDetect.of(text)
-        val spoken = when (script) {
-            Script.TELUGU -> false
-            Script.DEVANAGARI -> output?.say(text, useHindi = true) == true
-            Script.LATIN -> output?.say(text, useHindi = false) == true
-        }
-        if (!spoken) {
-            val locale = when (script) {
-                Script.TELUGU -> Locale("te", "IN")
-                Script.DEVANAGARI -> Locale("hi", "IN")
-                Script.LATIN -> Locale("en", "IN")
-            }
-            systemSay(text, locale)
-        }
+        if (output?.say(text) != true) systemSay(text, Locale("en", "IN"))
     }
 
     private suspend fun systemSay(text: String, locale: Locale) {

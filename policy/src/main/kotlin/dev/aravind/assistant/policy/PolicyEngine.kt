@@ -473,28 +473,6 @@ enum class WakeSensitivity(val boost: Float, val threshold: Float) {
     HIGH(3.5f, 0.1f),
 }
 
-enum class Script { LATIN, DEVANAGARI, TELUGU }
-
-object ScriptDetect {
-    /** Picks the reply voice from the letters used in the text. */
-    fun of(text: String): Script {
-        var hindi = 0
-        var telugu = 0
-        var latin = 0
-        for (c in text) {
-            when (c) {
-                in '\u0900'..'\u097F' -> hindi++
-                in '\u0C00'..'\u0C7F' -> telugu++
-                in 'A'..'Z', in 'a'..'z' -> latin++
-            }
-        }
-        return when {
-            telugu > 0 && telugu >= hindi && telugu >= latin -> Script.TELUGU
-            hindi > 0 && hindi >= latin -> Script.DEVANAGARI
-            else -> Script.LATIN
-        }
-    }
-}
 
 /**
  * The AI model can only act through tool calls. If it answers a command in words as if

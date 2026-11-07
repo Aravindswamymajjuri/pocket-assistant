@@ -58,8 +58,8 @@ object Features {
     fun setWakeWord(value: Boolean) = Prefs.put("wake", value.toString())
     fun wakeName(): String = Prefs.get("name") ?: WakeName.DEFAULT
     fun setWakeName(value: String) = Prefs.put("name", value.trim())
-    fun language(): String = Prefs.get("language") ?: "en"
-    fun setLanguage(value: String) = Prefs.put("language", value)
+    /** The assistant understands English only. */
+    fun language(): String = "en"
     fun gate(category: Category) = Prefs.flag("gate_${category.name}")
     fun setGate(category: Category, value: Boolean) = Prefs.put("gate_${category.name}", value.toString())
     fun markUsed(category: Category) = Prefs.put("used_${category.name}", System.currentTimeMillis().toString())

@@ -20,8 +20,6 @@ import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
 import dev.aravind.assistant.policy.BpeTokenizer
 import dev.aravind.assistant.policy.ModelPath
-import dev.aravind.assistant.policy.Script
-import dev.aravind.assistant.policy.ScriptDetect
 import dev.aravind.assistant.policy.SpeechPrompt
 import dev.aravind.assistant.policy.Tool
 import dev.aravind.assistant.policy.VoiceMatch
@@ -52,7 +50,7 @@ object WhisperCpp {
 
     @Synchronized
     fun transcribe(samples: FloatArray, language: String): String {
-        if (handle == 0L) handle = nativeInit(AppPaths.models.resolve("whisper/ggml-base-q5_1.bin").absolutePath)
+        if (handle == 0L) handle = nativeInit(AppPaths.models.resolve("whisper/ggml-base.en-q5_1.bin").absolutePath)
         check(handle != 0L) { "The speech model failed to load" }
         return nativeTranscribe(handle, samples, language, SpeechPrompt.text(Features.wakeName()), java.lang.Runtime.getRuntime().availableProcessors().coerceIn(2, 8)).trim()
     }
@@ -141,9 +139,8 @@ class VoiceEngines {
     )
 
     private val english by lazy { piper("piper") }
-    private val hindi by lazy { piper("piper-hi") }
 
-    fun synthesize(text: String, useHindi: Boolean) = (if (useHindi) hindi else english).generate(text, 0, 1.0f)
+    fun synthesize(text: String) = english.generate(text, 0, 1.0f)
 
     fun embedding(samples: FloatArray): FloatArray? {
         val stream: OnlineStream = extractor.createStream()
@@ -377,7 +374,7 @@ class VoiceLoop(private val engines: VoiceEngines, private val onCommand: (Heard
     }
 }
 
-/** Piper speaks English and Hindi. Telugu uses a Windows voice if one is installed. */
+/** Piper speaks every reply. */
 class VoiceOutput(private val engines: VoiceEngines, private val loop: () -> VoiceLoop?) {
     private val lock = Any()
 
@@ -386,11 +383,7 @@ class VoiceOutput(private val engines: VoiceEngines, private val loop: () -> Voi
         synchronized(lock) {
             loop()?.speaking = true
             try {
-                when (ScriptDetect.of(text)) {
-                    Script.TELUGU -> windowsVoice(text, "te-IN")
-                    Script.DEVANAGARI -> piper(text, true)
-                    Script.LATIN -> piper(text, false)
-                }
+                piper(text)
             } catch (e: Exception) {
                 Audit.log("speech_output_failed:${e.javaClass.simpleName}")
             } finally {
@@ -400,8 +393,8 @@ class VoiceOutput(private val engines: VoiceEngines, private val loop: () -> Voi
         }
     }
 
-    private fun piper(text: String, hindi: Boolean) {
-        val audio = engines.synthesize(text, hindi)
+    private fun piper(text: String) {
+        val audio = engines.synthesize(text)
         val format = AudioFormat(audio.sampleRate.toFloat(), 16, 1, true, false)
         val line = AudioSystem.getSourceDataLine(format)
         line.open(format)
@@ -418,22 +411,6 @@ class VoiceOutput(private val engines: VoiceEngines, private val loop: () -> Voi
         }
         line.drain()
         line.close()
-    }
-
-    private fun windowsVoice(text: String, culture: String) {
-        val result = Ps.run(
-            """
-Add-Type -AssemblyName System.Speech
-${'$'}s = New-Object System.Speech.Synthesis.SpeechSynthesizer
-${'$'}v = ${'$'}s.GetInstalledVoices() | Where-Object { ${'$'}_.VoiceInfo.Culture.Name -eq ${'$'}env:PA_CULTURE } | Select-Object -First 1
-if (${'$'}null -eq ${'$'}v) { 'NO_VOICE'; exit }
-${'$'}s.SelectVoice(${'$'}v.VoiceInfo.Name)
-${'$'}s.Speak(${'$'}env:PA_TEXT)
-            """.trimIndent(),
-            mapOf("PA_TEXT" to text, "PA_CULTURE" to culture),
-            120,
-        )
-        if (result.contains("NO_VOICE")) Runtime.say("Add the Telugu voice in Windows speech settings to hear this reply")
     }
 }
 
@@ -476,8 +453,7 @@ object Gemma {
         }
         return """
             Your name is ${Features.wakeName()}. You are a friendly voice assistant on the user's Windows laptop.
-            Reply with one JSON object and no other text. Keep the "reply" text in the language the user spoke,
-            including Hindi or Telugu. Tool ids and argument names always stay in English.
+            Reply with one JSON object and no other text. Always reply in English.
             To answer in words, use {"reply":"short spoken answer"}.
             To use one tool, use {"tool":"tool_id","args":{"name":"value"}}.
             For several steps in order, use {"plan":[{"tool":"tool_id","args":{}},{"tool":"tool_id","args":{}}]}.

@@ -255,17 +255,6 @@ class SecurityTest {
         }
     }
 
-    @Test fun scriptDetectionPicksVoice() {
-        assertEquals(Script.TELUGU, ScriptDetect.of("నమస్కారం, మీరు ఎలా ఉన్నారు"))
-        assertEquals(Script.DEVANAGARI, ScriptDetect.of("नमस्ते, आप कैसे हैं"))
-        assertEquals(Script.LATIN, ScriptDetect.of("Hello there"))
-    }
-
-    @Test fun stopWorksInHindiAndTelugu() {
-        assertTrue(CommandRouter.isStop("बंद करो"))
-        assertTrue(CommandRouter.isStop("ఆపు."))
-    }
-
     @Test fun windowsSystemToolsAreProtected() {
         val tap = call("tap_text", "text" to "Yes")
         listOf("cmd.exe", "powershell.exe", "regedit.exe", "systemsettings.exe", "taskmgr.exe").forEach { exe ->
@@ -395,9 +384,9 @@ class SecurityTest {
     @Test fun webSearchPhrases() {
         assertEquals("weather in hyderabad", CommandRouter.route("search for weather in hyderabad")?.text("query"))
         assertEquals("cricket score", CommandRouter.route("search cricket score on google")?.text("query"))
-        val yt = CommandRouter.route("play telugu songs on youtube")
+        val yt = CommandRouter.route("play relaxing songs on youtube")
         assertEquals("youtube", yt?.text("site"))
-        assertEquals("telugu songs", yt?.text("query"))
+        assertEquals("relaxing songs", yt?.text("query"))
     }
 
     @Test fun notificationsAndTapsRunDirectly() {

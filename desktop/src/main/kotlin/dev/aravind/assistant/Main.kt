@@ -27,7 +27,6 @@ import javax.swing.Box
 import javax.swing.BoxLayout
 import javax.swing.JButton
 import javax.swing.JCheckBox
-import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JFileChooser
 import javax.swing.JFrame
@@ -263,11 +262,6 @@ private class Ui {
             }
         }
         panel.add(row(wake))
-        val languages = linkedMapOf("English" to "en", "Hindi" to "hi", "Telugu" to "te", "Auto" to "auto")
-        val language = JComboBox(languages.keys.toTypedArray())
-        language.selectedItem = languages.entries.first { it.value == Features.language() }.key
-        language.addActionListener { Features.setLanguage(languages.getValue(language.selectedItem as String)) }
-        panel.add(row(JLabel("Speaking language"), language))
         panel.add(
             row(
                 button("Set up Voice ID") {
@@ -360,14 +354,10 @@ private fun selfTest(report: File): Int {
         "DPAPI-protected keys work"
     }
     step("piper english") {
-        val audio = engines.synthesize("Please open the calendar and set a timer.", false)
+        val audio = engines.synthesize("Please open the calendar and set a timer.")
         spoken = resample(audio.samples, audio.sampleRate)
         check(spoken.size > SAMPLE_RATE)
         "${spoken.size} samples"
-    }
-    step("piper hindi") {
-        check(engines.synthesize("नमस्ते, आप कैसे हैं", true).samples.isNotEmpty())
-        "voice generated"
     }
     step("whisper.cpp") {
         val text = WhisperCpp.transcribe(spoken, "en")
@@ -383,7 +373,7 @@ private fun selfTest(report: File): Int {
     }
     // Plays spoken wake phrases into the real detector, the way the microphone would.
     fun detects(phrase: String, name: String, sensitivity: WakeSensitivity): Boolean {
-        val audio = engines.synthesize(phrase, false)
+        val audio = engines.synthesize(phrase)
         val speech = resample(audio.samples, audio.sampleRate)
         val silence = FloatArray(SAMPLE_RATE)
         val stream = engines.spotter.createStream(engines.wakeKeywords(name, sensitivity))
@@ -445,7 +435,7 @@ private fun selfTest(report: File): Int {
         var moonTotal = 0L
         var whisperTotal = 0L
         for (line in lines) {
-            val audio = engines.synthesize(line, false)
+            val audio = engines.synthesize(line)
             val speech = resample(audio.samples, audio.sampleRate)
             var started = System.nanoTime()
             val stream = moon.createStream()
