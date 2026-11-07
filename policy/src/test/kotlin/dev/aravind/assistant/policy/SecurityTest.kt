@@ -413,11 +413,11 @@ class SecurityTest {
                 "\u2581A" to -1f, "\u2581NO" to -2f, "VA" to -2f, "\u2581MI" to -2f, "TRA" to -2f, "\u2581MITRA" to -9f),
         )
         val high = WakeName.keywords(tokenizer, "Nova", WakeSensitivity.HIGH)!!.split("/")
-        assertEquals(6, high.size)
-        assertTrue(high.all { it.contains(":4.0 #0.08") })
+        assertEquals(5, high.size)
+        assertTrue(high.all { it.contains(":3.5 #0.1") })
         assertTrue(high.any { it.endsWith("@HI_NOVA") })
         assertEquals(1, WakeName.keywords(tokenizer, "Nova", WakeSensitivity.LOW)!!.split("/").size)
-        assertTrue(WakeName.keywords(tokenizer, "Mitra", WakeSensitivity.HIGH)!!.split("/").any { it.endsWith("@MITRA") })
+        assertFalse(WakeName.keywords(tokenizer, "Mitra", WakeSensitivity.HIGH)!!.split("/").any { it.endsWith("@MITRA") })
         assertFalse(WakeName.keywords(tokenizer, "Mitra", WakeSensitivity.NORMAL)!!.split("/").any { it.endsWith("@MITRA") })
     }
 }

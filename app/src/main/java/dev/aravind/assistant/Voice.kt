@@ -97,6 +97,7 @@ class VoiceEngines(context: Context) {
                 ),
                 keywordsFile = "$root/kws/keywords.txt",
                 numTrailingBlanks = 1,
+                maxActivePaths = 8,
             ),
         )
     }

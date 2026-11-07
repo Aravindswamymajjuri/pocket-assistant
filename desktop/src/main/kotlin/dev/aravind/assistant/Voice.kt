@@ -87,6 +87,7 @@ class VoiceEngines {
                 )
                 .setKeywordsFile("$root/kws/keywords.txt")
                 .setNumTrailingBlanks(1)
+                .setMaxActivePaths(8)
                 .build(),
         )
     }

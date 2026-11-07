@@ -456,13 +456,12 @@ object WakeName {
     fun keywords(tokenizer: BpeTokenizer, name: String, sensitivity: WakeSensitivity): String? {
         val upper = name.trim().uppercase()
         val greetings = when (sensitivity) {
-            WakeSensitivity.HIGH -> listOf("HEY", "HI", "HELLO", "OK", "OKAY", "A")
+            WakeSensitivity.HIGH -> listOf("HEY", "HI", "HELLO", "OK", "OKAY")
             WakeSensitivity.NORMAL -> listOf("HEY", "HI", "HELLO", "OK")
             WakeSensitivity.LOW -> listOf("HEY")
         }
         val phrases = greetings.map { "$it $upper" }.toMutableList()
-        // The name on its own only for longer names, which are less likely to come up by chance.
-        if (sensitivity == WakeSensitivity.HIGH && upper.replace(" ", "").length >= 5) phrases += upper
+        // The name on its own is left to the slower Whisper check. In testing it competed with "hey" plus the name.
         val lines = phrases.mapNotNull { line(tokenizer, it, sensitivity.boost, sensitivity.threshold) }
         return lines.takeIf { it.isNotEmpty() }?.joinToString("/")
     }
@@ -471,7 +470,7 @@ object WakeName {
 enum class WakeSensitivity(val boost: Float, val threshold: Float) {
     LOW(2.0f, 0.25f),
     NORMAL(3.0f, 0.15f),
-    HIGH(4.0f, 0.08f),
+    HIGH(3.5f, 0.1f),
 }
 
 enum class Script { LATIN, DEVANAGARI, TELUGU }
