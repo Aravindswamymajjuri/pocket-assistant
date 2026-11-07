@@ -111,7 +111,7 @@ object Features {
     fun aiCalls(context: Context) = prefs(context).getBoolean("calls", false)
     fun setAiCalls(context: Context, value: Boolean) = prefs(context).edit().putBoolean("calls", value).apply()
     fun wakeSensitivity(context: Context): WakeSensitivity =
-        runCatching { WakeSensitivity.valueOf(prefs(context).getString("sensitivity", null) ?: "HIGH") }.getOrDefault(WakeSensitivity.HIGH)
+        runCatching { WakeSensitivity.valueOf(prefs(context).getString("sensitivity", null) ?: "NORMAL") }.getOrDefault(WakeSensitivity.NORMAL)
     fun setWakeSensitivity(context: Context, value: WakeSensitivity) = prefs(context).edit().putString("sensitivity", value.name).apply()
 
     fun wakeName(context: Context): String = prefs(context).getString("name", null) ?: WakeName.DEFAULT

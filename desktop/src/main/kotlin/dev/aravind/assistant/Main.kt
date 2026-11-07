@@ -413,11 +413,17 @@ private fun selfTest(report: File): Int {
             Triple("Hey Jarvis.", "Jarvis", true),
             Triple("The weather is nice today.", "Nova", false),
         )
-        val results = WakeSensitivity.entries.associateWith { level ->
-            cases.count { (phrase, name, expected) -> detects(phrase, name, level) == expected }
+        val details = StringBuilder()
+        val correct = WakeSensitivity.entries.associateWith { level ->
+            cases.count { (phrase, name, expected) ->
+                val heard = detects(phrase, name, level)
+                details.append(" [$level '$phrase' ${if (heard) "woke" else "quiet"}]")
+                heard == expected
+            }
         }
-        check(results.getValue(WakeSensitivity.HIGH) >= cases.size - 1) { "results: $results" }
-        results.entries.joinToString { "${it.key}=${it.value}/${cases.size} correct" }
+        val summary = correct.entries.joinToString { "${it.key}=${it.value}/${cases.size}" } + details
+        check(correct.getValue(WakeSensitivity.NORMAL) == cases.size) { summary }
+        summary
     }
     step("vad") {
         val vad = engines.newVad()

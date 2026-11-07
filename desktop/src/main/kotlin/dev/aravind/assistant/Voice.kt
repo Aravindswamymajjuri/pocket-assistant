@@ -93,7 +93,7 @@ class VoiceEngines {
 
     fun wakeKeywords(): String {
         val tokenizer = BpeTokenizer.parse(File(root, "kws/bpe.vocab").readLines().asSequence())
-        return wakeKeywords(Features.wakeName(), WakeSensitivity.HIGH)
+        return wakeKeywords(Features.wakeName(), WakeSensitivity.NORMAL)
     }
 
     fun wakeKeywords(name: String, sensitivity: WakeSensitivity): String {
