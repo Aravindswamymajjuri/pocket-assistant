@@ -480,4 +480,13 @@ class SecurityTest {
         assertNull(FuzzyCommand.match("hello"))
         assertEquals(Tool.READ_SCREEN, CommandRouter.route(FuzzyCommand.match("The reed mescaline")!!)?.tool)
     }
+
+    @Test fun misheardFirstWordsAreSkipped() {
+        val alarm = CommandRouter.route("And alarm for 7 15 pm today")
+        assertEquals(19L to 15L, alarm?.let { it.long("hour") to it.long("minute") })
+        assertEquals(Tool.SET_ALARM, CommandRouter.route("Sat an alarm for 6 am")?.tool)
+        assertEquals(Tool.FLASHLIGHT, CommandRouter.route("so turn on the flashlight")?.tool)
+        assertNull(CommandRouter.route("don't call daddy"))
+        assertNull(CommandRouter.route("and"))
+    }
 }

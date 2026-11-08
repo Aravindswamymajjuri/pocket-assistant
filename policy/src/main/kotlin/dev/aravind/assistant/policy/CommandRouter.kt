@@ -47,10 +47,20 @@ object CommandRouter {
 
     /** contacts helps split "send a message to Daddy hi" into a name and a message. */
     fun route(text: String, contacts: Collection<String> = emptyList()): ToolCall? {
-        val t = normalize(text)
-        val raw = message(t, contacts) ?: match(t) ?: return null
-        return (ToolValidator.validate(raw.first, raw.second) as? Validated.Ok)?.call
+        var t = normalize(text)
+        // Speech recognition often mishears the first word, such as "and" for "set an".
+        // Only harmless filler words are dropped, never words like "don't" that change the meaning.
+        repeat(3) {
+            val raw = message(t, contacts) ?: match(t)
+            if (raw != null) return (ToolValidator.validate(raw.first, raw.second) as? Validated.Ok)?.call
+            val next = t.replaceFirst(misheardStart, "")
+            if (next == t || next.isBlank()) return null
+            t = next
+        }
+        return null
     }
+
+    private val misheardStart = Regex("(?i)^(?:and|an|in|on|so|um|uh|the|a|okay|ok|now|then|sat|said|said an|set in|just|hey|hi|yeah|yes)\\s+")
 
     private val devices: List<Pair<Regex, Pair<String, String?>>> = listOf(
         "(?:super|ultra|extreme) (?:power|battery) sav(?:er|ing)(?: mode)?" to ("quick_toggle" to QuickSettings.SUPER_SAVER),

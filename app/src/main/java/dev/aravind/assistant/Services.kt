@@ -189,7 +189,8 @@ class AssistantService : Service() {
                 val whisper = runCatching { voice.whisperOnly(samples, prompt) }.getOrElse { "failed: ${it.javaClass.simpleName}" }
                 val whisperMs = System.currentTimeMillis() - start
                 val level = when {
-                    peak < 0.05f -> "very quiet. Speak closer to the phone"
+                    peak < 0.05f -> "very quiet. Hold the phone 15 to 30 cm from your mouth"
+                    peak < 0.20f -> "quiet. Hold the phone a little closer for better accuracy"
                     peak > 0.98f -> "too loud and distorted. Move a little away"
                     else -> "good"
                 }
