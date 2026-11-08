@@ -502,7 +502,7 @@ class SecurityTest {
 
     @Test fun wakeCheckIsStrict() {
         assertEquals("", WakeName.heardInStrict("Hey Nova.", "Nova"))
-        assertEquals("call daddy", WakeName.heardInStrict("Hey Noah, call Daddy", "Nova"))
+        assertEquals("call daddy", WakeName.heardInStrict("Hey Nowa, call Daddy", "Nova"))
         assertEquals("", WakeName.heardInStrict("Nova", "Nova"))
         assertNull(WakeName.heardInStrict("Noah", "Nova"))
         assertNull(WakeName.heardInStrict("a nova", "Nova"))
