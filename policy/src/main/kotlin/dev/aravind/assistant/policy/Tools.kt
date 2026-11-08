@@ -67,7 +67,24 @@ enum class Tool(
         "send_whatsapp", Risk.L2_OUTBOUND, Category.MESSAGES,
         mapOf("to" to TextParam(60), "body" to TextParam(480)), "Send a WhatsApp message",
     ),
-    PLACE_CALL("place_call", Risk.L0_SAFE, Category.CALLS, mapOf("to" to TextParam(60)), "Place a phone call");
+    PLACE_CALL("place_call", Risk.L0_SAFE, Category.CALLS, mapOf("to" to TextParam(60)), "Place a phone call"),
+    OPEN_CHAT(
+        "open_chat", Risk.L0_SAFE, Category.MESSAGES,
+        mapOf("contact" to TextParam(60), "app" to ChoiceParam(setOf("whatsapp", "sms"), required = false)),
+        "Open the chat with a contact, without sending anything",
+    ),
+    APP_SECTION(
+        "app_section", Risk.L0_SAFE, Category.APPS,
+        mapOf("section" to ChoiceParam(AppSections.ALL.keys)), "Open a part of an app: ${AppSections.ALL.keys.joinToString()}",
+    ),
+    READ_SCREEN(
+        "read_screen", Risk.L0_SAFE, Category.SCREEN,
+        mapOf("explain" to BoolParam(required = false)), "Read the screen aloud, or explain what is on it",
+    ),
+    SCREEN_TASK(
+        "screen_task", Risk.L0_SAFE, Category.SCREEN,
+        mapOf("goal" to TextParam(200)), "Do a task inside the app that is open, step by step, such as finding a setting",
+    );
 
     val hasRecipient: Boolean get() = "to" in params
 
@@ -88,6 +105,21 @@ object QuickSettings {
     const val SCREEN_RECORDING = "screen_recording"
     const val AUTO_ROTATE = "auto_rotate"
     val ALL = setOf(HOTSPOT, AIRPLANE, LOCATION, DARK_MODE, BATTERY_SAVER, SUPER_SAVER, SCREEN_RECORDING, AUTO_ROTATE)
+}
+
+/** A part of an app, opened by starting the app and tapping its tab. */
+data class AppSection(val app: String, val packageName: String, val tab: List<String>)
+
+object AppSections {
+    val ALL = mapOf(
+        "instagram_reels" to AppSection("Instagram", "com.instagram.android", listOf("Reels")),
+        "instagram_search" to AppSection("Instagram", "com.instagram.android", listOf("Search and explore", "Search", "Explore")),
+        "instagram_profile" to AppSection("Instagram", "com.instagram.android", listOf("Profile")),
+        "youtube_shorts" to AppSection("YouTube", "com.google.android.youtube", listOf("Shorts")),
+        "youtube_subscriptions" to AppSection("YouTube", "com.google.android.youtube", listOf("Subscriptions")),
+        "whatsapp_status" to AppSection("WhatsApp", "com.whatsapp", listOf("Updates", "Status")),
+        "whatsapp_calls" to AppSection("WhatsApp", "com.whatsapp", listOf("Calls")),
+    )
 }
 
 data class ToolCall(val tool: Tool, val args: Map<String, Any>) {

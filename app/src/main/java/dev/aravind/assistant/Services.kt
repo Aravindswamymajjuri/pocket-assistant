@@ -22,6 +22,8 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import dev.aravind.assistant.policy.BlockedApps
+import dev.aravind.assistant.policy.ScreenAgent
+import dev.aravind.assistant.policy.ScreenItem
 import dev.aravind.assistant.policy.SecretRedactor
 import dev.aravind.assistant.policy.SpeechPrompt
 import dev.aravind.assistant.policy.WakeName
@@ -350,6 +352,51 @@ class AutomationService : AccessibilityService() {
 
     private fun label(node: AccessibilityNodeInfo) =
         (node.text?.toString() ?: node.contentDescription?.toString()).orEmpty().trim().lowercase()
+
+    /** Visible items on the app screen, in reading order. Password fields are never included. */
+    fun screenItems(): List<Pair<ScreenItem, AccessibilityNodeInfo>>? {
+        val root = allowedRoot() ?: return null
+        val out = ArrayList<Pair<ScreenItem, AccessibilityNodeInfo>>()
+        fun textUnder(node: AccessibilityNodeInfo, depth: Int = 0): String {
+            if (depth > 4 || node.isPassword) return ""
+            val own = label(node)
+            if (own.isNotEmpty()) return own
+            return (0 until node.childCount).mapNotNull { node.getChild(it) }.map { textUnder(it, depth + 1) }
+                .filter { it.isNotEmpty() }.joinToString(" ").take(80)
+        }
+        fun walk(node: AccessibilityNodeInfo?, insideButton: Boolean) {
+            if (node == null || out.size >= ScreenAgent.MAX_ITEMS * 2) return
+            if (!node.isVisibleToUser || node.isPassword) return
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            if (bounds.isEmpty) return
+            val clickable = node.isClickable && node.isEnabled
+            when {
+                node.isEditable -> {
+                    val hint = node.hintText?.toString() ?: node.text?.toString() ?: node.contentDescription?.toString() ?: "text box"
+                    out += ScreenItem(hint.take(80), "text box") to node
+                }
+                clickable && !insideButton -> {
+                    val text = textUnder(node)
+                    if (text.isNotEmpty()) out += ScreenItem(text.take(80), "button") to node
+                }
+                !insideButton && label(node).isNotEmpty() -> out += ScreenItem(label(node).take(160), "text") to node
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i), insideButton || (clickable && textUnder(node).isNotEmpty()))
+        }
+        walk(root, false)
+        return out.distinctBy { it.first.label to it.first.kind }
+    }
+
+    fun pressNode(node: AccessibilityNodeInfo) = press(node)
+
+    fun typeInto(node: AccessibilityNodeInfo, text: String): Boolean {
+        press(node)
+        val args = android.os.Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        }
+        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
 
     /** Taps an exact match first, then the closest partial match. */
     fun tap(text: String): Boolean {

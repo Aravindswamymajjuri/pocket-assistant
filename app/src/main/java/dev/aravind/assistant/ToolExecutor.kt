@@ -21,7 +21,12 @@ import android.provider.ContactsContract
 import android.provider.Settings
 import android.telephony.SmsManager
 import android.telephony.TelephonyManager
+import dev.aravind.assistant.policy.AppSection
+import dev.aravind.assistant.policy.AppSections
 import dev.aravind.assistant.policy.BlockedApps
+import dev.aravind.assistant.policy.ScreenAction
+import dev.aravind.assistant.policy.ScreenAgent
+import dev.aravind.assistant.policy.SecretRedactor
 import dev.aravind.assistant.policy.ContactMatcher
 import dev.aravind.assistant.policy.PhoneTarget
 import dev.aravind.assistant.policy.QuickSettings
@@ -33,7 +38,12 @@ import java.net.URLEncoder
 /** Runs only calls the policy engine has already approved. It rechecks app and permission limits. */
 class ToolExecutor(private val context: Context) {
 
-    suspend fun execute(call: ToolCall): String = when (call.tool) {
+    /** The words you said, used when explaining the screen. */
+    private var utterance = ""
+
+    suspend fun execute(call: ToolCall, said: String = ""): String = run { utterance = said; dispatch(call) }
+
+    private suspend fun dispatch(call: ToolCall): String = when (call.tool) {
         Tool.OPEN_APP -> openApp(call.text("name"))
         Tool.SET_ALARM -> setAlarm(call)
         Tool.SET_TIMER -> setTimer(call.long("seconds").toInt())
@@ -58,6 +68,10 @@ class ToolExecutor(private val context: Context) {
         Tool.SEND_SMS -> sendSms(call.text("to"), call.text("body"))
         Tool.SEND_WHATSAPP -> sendWhatsApp(call.text("to"), call.text("body"))
         Tool.PLACE_CALL -> placeCall(call.text("to"))
+        Tool.OPEN_CHAT -> openChat(call.text("contact"), call.args["app"] as? String ?: "whatsapp")
+        Tool.APP_SECTION -> appSection(AppSections.ALL.getValue(call.text("section")))
+        Tool.READ_SCREEN -> readScreen(call.args["explain"] as? Boolean ?: false, utterance)
+        Tool.SCREEN_TASK -> screenTask(call.text("goal"))
     }
 
     private fun launch(intent: Intent) {
@@ -371,6 +385,103 @@ class ToolExecutor(private val context: Context) {
         if (number == null) return error ?: "I couldn't find that number"
         launch(Intent(Intent.ACTION_CALL, Uri.fromParts("tel", number, null)))
         return "Calling $to"
+    }
+
+    private fun installedWhatsApp(): String? = listOf("com.whatsapp", "com.whatsapp.w4b").firstOrNull { pkg ->
+        runCatching { context.packageManager.getPackageInfo(pkg, 0) }.isSuccess
+    }
+
+    private fun waDigits(number: String): String {
+        var digits = PhoneTarget.digits(number)
+        if (digits.length == 11 && digits.startsWith("0")) digits = digits.drop(1)
+        if (digits.length == 10) digits = "91$digits"
+        return digits
+    }
+
+    private fun openChat(contact: String, app: String): String {
+        val (number, error) = resolveNumber(contact)
+        if (number == null) return error ?: "I couldn't find $contact"
+        if (app == "sms") {
+            launch(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${PhoneTarget.digits(number)}")))
+            return "Opening your messages with $contact"
+        }
+        val pkg = installedWhatsApp() ?: return "WhatsApp isn't installed"
+        launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://api.whatsapp.com/send?phone=${waDigits(number)}")).setPackage(pkg))
+        return "Opening your WhatsApp chat with $contact"
+    }
+
+    /** Starts the app, waits for it, then taps the tab, like you would. */
+    private suspend fun appSection(section: AppSection): String {
+        val service = AutomationService.instance ?: return "Turn on the Accessibility Service for Pocket Assistant first"
+        val intent = context.packageManager.getLaunchIntentForPackage(section.packageName)
+            ?: return "${section.app} isn't installed"
+        launch(intent)
+        repeat(20) {
+            delay(250)
+            if (service.targetPackage() == section.packageName) {
+                delay(900)
+                repeat(4) {
+                    if (section.tab.any { tab -> service.tap(tab) }) return "Opened ${section.tab.first()} in ${section.app}"
+                    delay(500)
+                }
+                return "I opened ${section.app}, but couldn't find ${section.tab.first()}"
+            }
+        }
+        return "${section.app} didn't open"
+    }
+
+    private suspend fun readScreen(explain: Boolean, question: String): String {
+        val service = AutomationService.instance ?: return "Turn on the Accessibility Service for Pocket Assistant first"
+        val items = service.screenItems() ?: return "I can't read this screen. Open the app you want first"
+        if (items.isEmpty()) return "I can't find any text on this screen"
+        val text = SecretRedactor.redact(items.joinToString(". ") { it.first.label })
+        if (!explain) return "On the screen: " + text.take(700)
+        return try {
+            GemmaEngine.explainScreen(context, text, question.ifBlank { "Explain my screen" }).trim().take(700)
+        } catch (e: IllegalStateException) {
+            "Set up the Gemma model to get explanations. Here's what's on the screen: " + text.take(500)
+        }
+    }
+
+    /** Does a task inside the open app, one checked step at a time, for at most six steps. */
+    private suspend fun screenTask(goal: String): String {
+        val service = AutomationService.instance ?: return "Turn on the Accessibility Service for Pocket Assistant first"
+        ModelStore.problem(context)?.let { return "Screen tasks need the Gemma model. $it" }
+        val done = ArrayList<String>()
+        repeat(ScreenAgent.MAX_STEPS) {
+            val items = service.screenItems() ?: return "I can't control this screen"
+            val visible = items.take(ScreenAgent.MAX_ITEMS)
+            val prompt = ScreenAgent.prompt(goal, visible.map { it.first.copy(label = SecretRedactor.redact(it.first.label)) }, done)
+            val raw = try {
+                GemmaEngine.screenStep(context, prompt)
+            } catch (e: IllegalStateException) {
+                return e.message ?: "The AI model isn't ready"
+            }
+            when (val action = ScreenAgent.parse(raw, visible.size, goal)) {
+                null -> return "I couldn't work out the next step, so I stopped"
+                is ScreenAction.Done -> return action.say.ifBlank { "Done" }
+                is ScreenAction.Tap -> {
+                    val label = visible[action.index].first.label
+                    if (ScreenAgent.isRisky(label)) return "I stopped before tapping \"$label\". Say tap $label if you want me to"
+                    if (!service.pressNode(visible[action.index].second)) return "I couldn't tap $label"
+                    done += "tapped \"$label\""
+                }
+                is ScreenAction.Type -> {
+                    if (!service.typeInto(visible[action.index].second, action.text)) return "I couldn't type there"
+                    done += "typed \"${action.text}\""
+                }
+                is ScreenAction.Scroll -> {
+                    service.scroll(action.down)
+                    done += if (action.down) "scrolled down" else "scrolled up"
+                }
+                ScreenAction.Back -> {
+                    service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                    done += "went back"
+                }
+            }
+            delay(1500)
+        }
+        return "I tried ${ScreenAgent.MAX_STEPS} steps but didn't finish. Please check the screen"
     }
 
     private suspend fun sendWhatsApp(to: String, body: String): String {

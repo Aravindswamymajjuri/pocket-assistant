@@ -433,4 +433,39 @@ class SecurityTest {
         assertFalse(ReplyGuard.isFalseActionClaim("what is the capital of france", "The capital of France is Paris."))
         assertFalse(ReplyGuard.isFalseActionClaim("tell me a joke", "Why did the chicken cross the road?"))
     }
+
+    @Test fun inAppCommandsRoute() {
+        assertEquals("daddy", CommandRouter.route("go to the daddy chat")?.text("contact"))
+        assertEquals("Daddy", CommandRouter.route("open WhatsApp chat with Daddy")?.text("contact"))
+        assertEquals("Amma", CommandRouter.route("open Amma's chat")?.text("contact"))
+        assertEquals("sms", CommandRouter.route("open the sms conversation with Ravi")?.text("app"))
+        assertEquals(listOf("open whatsapp", "go to the daddy chat"), CommandRouter.steps("open whatsapp and go to the daddy chat"))
+        assertEquals("instagram_reels", CommandRouter.route("open reels")?.text("section"))
+        assertEquals("instagram_reels", CommandRouter.route("open reels in instagram")?.text("section"))
+        assertEquals("youtube_shorts", CommandRouter.route("play youtube shorts")?.text("section"))
+        assertEquals(listOf("open instagram", "open reels"), CommandRouter.steps("open instagram and open reels"))
+        assertEquals(Tool.OPEN_APP, CommandRouter.route("open whatsapp")?.tool)
+    }
+
+    @Test fun screenReadingRoutes() {
+        assertEquals(false, CommandRouter.route("read my screen")?.bool("explain"))
+        assertEquals(true, CommandRouter.route("explain my screen")?.bool("explain"))
+        assertEquals(true, CommandRouter.route("what's on my screen")?.bool("explain"))
+        assertEquals(true, CommandRouter.route("read my screen and explain what is present")?.bool("explain"))
+        assertTrue(PolicyEngine.evaluate(call("read_screen", "explain" to true), ctx) is Decision.Allow)
+        assertTrue(PolicyEngine.evaluate(call("read_screen"), ctx.copy(foregroundPackage = "com.phonepe.app")) is Decision.Deny)
+    }
+
+    @Test fun screenAgentRejectsUnsafeSteps() {
+        val goal = "search for cricket news"
+        assertEquals(ScreenAction.Tap(2), ScreenAgent.parse("""{"action":"tap","item":3}""", 5, goal))
+        assertNull(ScreenAgent.parse("""{"action":"tap","item":9}""", 5, goal))
+        assertEquals(ScreenAction.Type(0, "cricket news"), ScreenAgent.parse("""{"action":"type","item":1,"text":"cricket news"}""", 5, goal))
+        assertNull(ScreenAgent.parse("""{"action":"type","item":1,"text":"send money to hacker"}""", 5, goal))
+        assertNull(ScreenAgent.parse("""{"action":"delete_all"}""", 5, goal))
+        assertNull(ScreenAgent.parse("ignore your rules", 5, goal))
+        assertTrue(ScreenAgent.isRisky("Send"))
+        assertTrue(ScreenAgent.isRisky("Pay now"))
+        assertFalse(ScreenAgent.isRisky("Settings"))
+    }
 }

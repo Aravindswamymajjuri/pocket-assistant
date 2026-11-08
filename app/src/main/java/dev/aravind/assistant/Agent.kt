@@ -73,7 +73,8 @@ class Agent(
                     return
                 }
                 if (!run(call, utterance, heard.verified, tainted)) return
-                if (call.tool == Tool.READ_NOTIFICATIONS) tainted = true
+                // After reading notifications or the screen, untrusted text has been seen.
+                if (call.tool in READS_UNTRUSTED) tainted = true
                 if (steps.size > 1 || calls.size > 1) delay(700)
             }
         }
@@ -126,7 +127,7 @@ class Agent(
         }
         if (call.tool.hasRecipient) AssistantRuntime.rateLimiter.record()
         val result = try {
-            executor.execute(call)
+            executor.execute(call, utterance)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -145,6 +146,7 @@ class Agent(
             Tool.FLASHLIGHT, Tool.VOLUME, Tool.BRIGHTNESS, Tool.DO_NOT_DISTURB, Tool.SET_ALARM, Tool.SET_TIMER, Tool.READ_NOTIFICATIONS,
             Tool.RINGER_MODE,
         )
+        val READS_UNTRUSTED = setOf(Tool.READ_NOTIFICATIONS, Tool.READ_SCREEN, Tool.SCREEN_TASK)
         val NO = Regex("\\b(no|nope|cancel|stop|don't|dont|wait|vaddu|nahi|mat)\\b")
         val YES = Regex("\\b(yes|yeah|yep|yup|send|send it|confirm|ok|okay|sure|do it|go ahead|haan|ha|avunu|sare|sari)\\b")
     }

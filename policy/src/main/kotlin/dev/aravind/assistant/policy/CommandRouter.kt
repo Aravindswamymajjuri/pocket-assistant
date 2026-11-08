@@ -39,7 +39,7 @@ object CommandRouter {
 
     /** Repairs common speech mistakes at the start of a command. Message text is left alone. */
     fun normalize(text: String): String {
-        val cleaned = text.trim().trimEnd('.', '!', '?', ',').replace(Regex("\\s+"), " ")
+        val cleaned = text.trim().replace('\u2019', '\'').trimEnd('.', '!', '?', ',').replace(Regex("\\s+"), " ")
             .replace(Regex("(?i)^(?:can you |could you |please |will you )+"), "")
         return cleaned.replace(misheardTurn, "turn").replace(joinedTurn) { "turn ${it.groupValues[1]}" }
             .replace(Regex("(?i)\\b(turn|switch) of\\b")) { "${it.groupValues[1]} off" }
@@ -190,6 +190,9 @@ object CommandRouter {
         find("(?:search|google|look up|find)(?: on google| in google)?(?: for| about)? (.+?)(?: on google| in google| on the internet| on internet| online| on the web)?")?.let {
             return "web_search" to mapOf("query" to it[1], "site" to "google")
         }
+        screen(t)?.let { return it }
+        chat(t)?.let { return it }
+        section(t)?.let { return it }
         find("(?:open|launch|start) (.+)")?.let { return "open_app" to mapOf("name" to it[1].removePrefix("the ")) }
         find("(?:tap|click|press|select|touch) (?:on )?(?:the )?(.+?)(?: button| option)?")?.let { return "tap_text" to mapOf("text" to it[1]) }
         find("(?:make a call to|give a call to|call to|call|phone|dial|ring)(?: to)? (?:my )?(.+)")?.let { return "place_call" to mapOf("to" to it[1]) }
@@ -222,6 +225,57 @@ object CommandRouter {
             if (m.groupValues[2].toInt() < 60) "${m.groupValues[1]}:${m.groupValues[2]}" else m.value
         }
         return t.replace(Regex("\\s+"), " ").trim()
+    }
+
+    private fun screen(t: String): Pair<String, Map<String, Any?>>? {
+        val l = t.lowercase()
+        val screenWord = "(?:my |the |this )?(?:screen|page|display)"
+        if (Regex("^(?:read|read out|read aloud|tell me)(?: what'?s| what is| everything)?(?: on| in)? $screenWord(?: to me| aloud| out)?$").matches(l)) {
+            return "read_screen" to mapOf("explain" to false)
+        }
+        if (Regex("^(?:explain|describe|summari[sz]e|what(?:'s| is) (?:on|in)|tell me what(?:'s| is) (?:on|in)|what do you see on|look at)(?: the)? $screenWord.*$").matches(l) ||
+            Regex("^what am i (?:looking at|seeing)$").matches(l) ||
+            Regex("^read $screenWord and (?:explain|describe|summari[sz]e).*$").matches(l)
+        ) {
+            return "read_screen" to mapOf("explain" to true)
+        }
+        return null
+    }
+
+    /** "Open WhatsApp chat with Daddy", "go to the Daddy chat", "open Amma's messages". */
+    private fun chat(t: String): Pair<String, Map<String, Any?>>? {
+        val l = t.lowercase()
+        val app = if (Regex("\\b(sms|text messages?|messages app)\\b").containsMatchIn(l)) "sms" else "whatsapp"
+        val open = "(?:open|go to|show|show me|take me to|go into|enter)(?: the| my)?"
+        val where = "(?: (?:on|in) (?:whats ?app|sms|messages))?"
+        val patterns = listOf(
+            Regex("(?i)^$open (?:whats ?app |sms )?(?:chat|conversation|messages?)(?: with| of| from) (.+?)$where$"),
+            Regex("(?i)^$open (?:whats ?app |sms )?(.+?)(?:'s|s')? (?:whats ?app )?(?:chat|conversation)$where$"),
+        )
+        for (pattern in patterns) {
+            val name = pattern.matchEntire(t)?.groupValues?.get(1)?.trim() ?: continue
+            val clean = name.replace(Regex("(?i)^(?:whats ?app|sms)\\s+"), "").removePrefix("my ").trim()
+            if (clean.isEmpty() || clean.lowercase() in setOf("whatsapp", "the", "my", "a")) continue
+            return "open_chat" to mapOf("contact" to clean, "app" to app)
+        }
+        return null
+    }
+
+    private fun section(t: String): Pair<String, Map<String, Any?>>? {
+        val l = t.lowercase()
+        val open = "^(?:open|show|show me|go to|play|watch|take me to)(?: the| my| me)? "
+        fun has(app: String) = Regex("\\b$app\\b").containsMatchIn(l)
+        val key = when {
+            Regex("${open}(?:instagram )?reels?(?: (?:on|in) instagram)?$").matches(l) -> "instagram_reels"
+            has("instagram") && Regex("${open}(?:instagram )?(?:search|explore)(?: (?:on|in) instagram)?$").matches(l) -> "instagram_search"
+            has("instagram") && Regex("${open}(?:instagram )?profile(?: (?:on|in) instagram)?$").matches(l) -> "instagram_profile"
+            Regex("${open}(?:youtube |you tube )?shorts(?: (?:on|in) you ?tube)?$").matches(l) -> "youtube_shorts"
+            Regex("${open}(?:youtube |you tube )?subscriptions(?: (?:on|in) you ?tube)?$").matches(l) -> "youtube_subscriptions"
+            Regex("${open}(?:whats ?app )?(?:status|updates)(?: (?:on|in) whats ?app)?$").matches(l) && (has("whats ?app") || l.contains("status")) -> "whatsapp_status"
+            has("whats ?app") && Regex("${open}(?:whats ?app )?calls(?: (?:on|in) whats ?app)?$").matches(l) -> "whatsapp_calls"
+            else -> return null
+        }
+        return "app_section" to mapOf("section" to key)
     }
 
     private fun alarm(raw: String): Pair<String, Map<String, Any?>>? {
