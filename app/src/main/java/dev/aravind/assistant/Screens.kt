@@ -553,7 +553,7 @@ private fun HomeScreen(activity: FragmentActivity) {
             style = MaterialTheme.typography.bodySmall,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf(SpeechEngine.AUTO to "Auto", SpeechEngine.GOOGLE to "Google", SpeechEngine.MOONSHINE to "Moonshine", SpeechEngine.WHISPER to "Whisper")
+            listOf(SpeechEngine.AUTO to "Auto", SpeechEngine.GOOGLE to "Google", SpeechEngine.MOONSHINE to "Moonshine")
                 .forEach { (value, label) ->
                     val onClick = {
                         Features.setSpeechEngine(activity, value)
@@ -567,7 +567,6 @@ private fun HomeScreen(activity: FragmentActivity) {
             when (engine) {
                 SpeechEngine.GOOGLE -> "Most accurate for Indian English. Without its offline pack, Google may use the internet"
                 SpeechEngine.MOONSHINE -> "Open-source and fast. English only"
-                SpeechEngine.WHISPER -> "Open-source. Slower than Moonshine"
                 else -> "Uses Google on-device if available, otherwise Moonshine"
             },
             style = MaterialTheme.typography.bodySmall,
@@ -600,6 +599,17 @@ private fun HomeScreen(activity: FragmentActivity) {
         }
         ToggleRow("Wake word", "The mic stays open while this is on", wakeOn) { on ->
             Features.setWakeWord(activity, on)
+            refresh++
+        }
+        val myVoiceOnly = remember(refreshKey) { Features.wakeOnlyMyVoice(activity) }
+        val voiceSaved = remember(refreshKey) { VoiceId.isEnrolled(activity) }
+        ToggleRow(
+            "Only wake for my voice",
+            if (voiceSaved) "Other voices, like a TV, won't wake it" else "Save your voice in Voice ID first",
+            myVoiceOnly && voiceSaved,
+        ) { on ->
+            if (on && !voiceSaved) message = "Save your voice in Voice ID first, then turn this on"
+            else Features.setWakeOnlyMyVoice(activity, on)
             refresh++
         }
         val autoPause = remember(refreshKey) { Features.autoPause(activity) }

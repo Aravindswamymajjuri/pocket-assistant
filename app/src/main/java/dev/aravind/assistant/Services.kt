@@ -25,7 +25,6 @@ import dev.aravind.assistant.policy.BlockedApps
 import dev.aravind.assistant.policy.ScreenAgent
 import dev.aravind.assistant.policy.ScreenItem
 import dev.aravind.assistant.policy.SecretRedactor
-import dev.aravind.assistant.policy.SpeechPrompt
 import dev.aravind.assistant.policy.WakeName
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -159,7 +158,7 @@ class AssistantService : Service() {
             }
         }
         val samples = active.capture(9_000) ?: return null
-        return withContext(Dispatchers.Default) { active.understand(samples, "en") }
+        return withContext(Dispatchers.Default) { active.understand(samples) }
     }
 
     @Volatile
@@ -181,21 +180,17 @@ class AssistantService : Service() {
             val text = withContext(Dispatchers.Default) {
                 val peak = samples.maxOf { kotlin.math.abs(it) }
                 val loudness = (Audio.rms(samples) * 1000).toInt()
-                val prompt = SpeechPrompt.text(Features.wakeName(this@AssistantService))
-                var start = System.currentTimeMillis()
+                val start = System.currentTimeMillis()
                 val moon = runCatching { voice.moonshineOnly(samples) }.getOrElse { "failed: ${it.javaClass.simpleName}" }
                 val moonMs = System.currentTimeMillis() - start
-                start = System.currentTimeMillis()
-                val whisper = runCatching { voice.whisperOnly(samples, prompt) }.getOrElse { "failed: ${it.javaClass.simpleName}" }
-                val whisperMs = System.currentTimeMillis() - start
                 val level = when {
                     peak < 0.05f -> "very quiet. Hold the phone 15 to 30 cm from your mouth"
                     peak < 0.20f -> "quiet. Hold the phone a little closer for better accuracy"
                     peak > 0.98f -> "too loud and distorted. Move a little away"
                     else -> "good"
                 }
-                "Recorded %.1f s. Volume: %s (peak %d%%, level %d)\nMoonshine, %d ms: %s\nWhisper, %d ms: %s".format(
-                    samples.size / 16000f, level, (peak * 100).toInt(), loudness, moonMs, moon, whisperMs, whisper,
+                "Recorded %.1f s. Volume: %s (peak %d%%, level %d)\nMoonshine, %d ms: %s".format(
+                    samples.size / 16000f, level, (peak * 100).toInt(), loudness, moonMs, moon,
                 )
             }
             report(text)
@@ -244,7 +239,7 @@ class AssistantService : Service() {
         if (callJob?.isActive == true) return
         val active = loop ?: return
         callJob = scope.launch {
-            val session = CallSession(this@AssistantService, ::speak, { active.capture(it) }, { active.understand(it, "auto") })
+            val session = CallSession(this@AssistantService, ::speak, { active.capture(it) }, { active.understand(it) })
             session.run(number)
         }
     }
@@ -257,7 +252,6 @@ class AssistantService : Service() {
         fallback = null
         GemmaEngine.unload()
         GemmaEngine.clearHistory()
-        WhisperCpp.release()
         super.onDestroy()
     }
 

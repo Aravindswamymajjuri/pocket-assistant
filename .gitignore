@@ -8,7 +8,7 @@ local.properties
 *.litertlm
 app/libs/
 app/src/main/assets/models/
-app/src/main/cpp/whisper.cpp/
+desktop-models/
 .cxx/
 desktop/libs/
 desktop/native/whisper.cpp/

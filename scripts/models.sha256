@@ -1,6 +1,5 @@
 357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b  3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx
 4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f  ggml-base.en-q5_1.bin
-c77c5766f1cef09b6b7d47f21b546cbddd4157886b3b5d6d4f709e91e66c7c2b  ggml-tiny.en-q5_1.bin
 633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96  sherpa-onnx-1.13.8.aar
 f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a  sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2
 21870cecaa2e44e4e2bf63e02d1072bed183ccd10284871353bd9d24dad14e5e  sherpa-onnx-moonshine-base-en-int8.tar.bz2

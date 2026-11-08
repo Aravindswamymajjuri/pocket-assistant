@@ -34,7 +34,6 @@ import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
 import dev.aravind.assistant.policy.BpeTokenizer
-import dev.aravind.assistant.policy.SpeechPrompt
 import dev.aravind.assistant.policy.VoiceMatch
 import dev.aravind.assistant.policy.WakeName
 import dev.aravind.assistant.policy.WakeSensitivity
@@ -55,7 +54,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private const val SAMPLE_RATE = 16_000
 private const val MIN_WAKE_SAMPLES = SAMPLE_RATE * 2 / 5
-private const val MAX_WAKE_SAMPLES = SAMPLE_RATE * 3
+private const val MAX_WAKE_SAMPLES = SAMPLE_RATE * 5 / 2
+
+// A wake word only counts if real speech was heard in the last 1.5 seconds (15 frames of 0.1 s).
+private const val WAKE_SPEECH_FRAMES = 15
+
+// Speech must be about twice as loud as the room's background noise to wake the assistant.
+private const val WAKE_OVER_NOISE = 2.0f
+private const val WAKE_MIN_LEVEL = 0.003f
 
 // The detector flips quickly. The pause you must leave before a phrase ends is set separately below.
 private const val VAD_SILENCE = 0.2f
@@ -64,7 +70,7 @@ private const val WAKE_PAUSE_MS = 300
 
 /** Voice models ship in the APK and are unpacked to private storage on first use. */
 object VoiceAssets {
-    private const val VERSION = "6"
+    private const val VERSION = "7"
 
     fun dir(context: Context) = File(context.noBackupFilesDir, "voice")
 
@@ -189,25 +195,11 @@ class VoiceEngines(context: Context) {
     /** For the speech test: each engine on its own, with no fallback. */
     fun moonshineOnly(samples: FloatArray): String = moonshineText(Audio.normalized(samples))
 
-    fun whisperOnly(samples: FloatArray, prompt: String): String =
-        WhisperCpp.transcribe("$root/whisper/ggml-base.en-q5_1.bin", Audio.normalized(samples), "en", prompt)
-
-    /** Moonshine is used unless Whisper was chosen. Whisper is also the backup if Moonshine fails. */
-    fun transcribe(samples: FloatArray, language: String, prompt: String, engine: String = "auto"): String {
-        val audio = Audio.normalized(samples)
-        if (engine != SpeechEngine.WHISPER) {
-            runCatching { moonshineText(audio) }.getOrNull()?.takeIf { it.isNotBlank() }?.let {
-                AssistantRuntime.lastEngine.value = "Moonshine"
-                return it
-            }
-        }
-        AssistantRuntime.lastEngine.value = "Whisper"
-        return WhisperCpp.transcribe("$root/whisper/ggml-base.en-q5_1.bin", audio, "en", prompt)
+    /** Turns speech into text with Moonshine, on the phone. */
+    fun transcribe(samples: FloatArray): String {
+        AssistantRuntime.lastEngine.value = "Moonshine"
+        return moonshineText(Audio.normalized(samples))
     }
-
-    /** The small English model, several times faster, used only to check for the wake word. */
-    fun quickTranscribe(samples: FloatArray, prompt: String): String =
-        WhisperCpp.transcribe("$root/whisper/ggml-tiny.en-q5_1.bin", Audio.normalized(samples), "en", prompt)
 
     fun embedding(samples: FloatArray): FloatArray? {
         val stream: OnlineStream = extractor.createStream()
@@ -262,41 +254,10 @@ object Audio {
         if (frame.isEmpty()) 0f else kotlin.math.sqrt(frame.fold(0f) { sum, s -> sum + s * s } / frame.size)
 }
 
-/** whisper.cpp through a small JNI layer. English uses a more accurate English-only model. */
-object WhisperCpp {
-    // Each model stays loaded, so switching between the wake check and commands costs nothing.
-    private val handles = HashMap<String, Long>()
-
-    init {
-        System.loadLibrary("whisperjni")
-    }
-
-    private external fun nativeInit(model: String): Long
-    private external fun nativeTranscribe(handle: Long, samples: FloatArray, language: String, prompt: String, threads: Int): String
-    private external fun nativeFree(handle: Long)
-
-    @Synchronized
-    fun transcribe(model: String, samples: FloatArray, language: String, prompt: String): String {
-        val handle = handles.getOrPut(model) { nativeInit(model) }
-        if (handle == 0L) {
-            handles.remove(model)
-            error("The speech model failed to load")
-        }
-        return nativeTranscribe(handle, samples, language, prompt, 4).trim()
-    }
-
-    @Synchronized
-    fun release() {
-        handles.values.filter { it != 0L }.forEach { nativeFree(it) }
-        handles.clear()
-    }
-}
-
 object SpeechEngine {
     const val AUTO = "auto"
     const val GOOGLE = "google"
     const val MOONSHINE = "moonshine"
-    const val WHISPER = "whisper"
 }
 
 /**
@@ -455,6 +416,10 @@ class VoiceLoop(
     private var partialBusy = false
     private var partialFrames = 0
 
+    // The room's background noise level, and the last moment real speech was heard.
+    private var noiseFloor = 0.01f
+    private var lastSpeechFrame = -1000L
+
     /** Applies a new wake name without restarting the assistant. */
     fun reloadWakeName() {
         wakeChanged = true
@@ -473,11 +438,8 @@ class VoiceLoop(
         return result
     }
 
-    private fun prompt() = SpeechPrompt.text(Features.wakeName(context))
-
-    /** Language is a Whisper code. Leave it null to use the language chosen in Control Center. */
-    fun understand(samples: FloatArray, language: String? = null): Heard {
-        val text = engines.transcribe(samples, language ?: Features.language(context), prompt(), Features.speechEngine(context))
+    fun understand(samples: FloatArray): Heard {
+        val text = engines.transcribe(samples)
         // Voice ID adds a delay, so it only runs once a voice has been saved.
         val verified = VoiceId.isEnrolled(context) && VoiceId.matches(context, engines.embedding(samples))
         return Heard(text, verified, samples)
@@ -571,7 +533,7 @@ class VoiceLoop(
                 if (active != null) {
                     var samples = active.feed(frame)
                     // While you speak, the words so far are shown about once a second.
-                    if (samples == null && captureRequest == null && Features.speechEngine(context) != SpeechEngine.WHISPER) {
+                    if (samples == null && captureRequest == null) {
                         partialFrames++
                         if (partialFrames >= 8 && !partialBusy) {
                             active.snapshot()?.let { snap ->
@@ -603,8 +565,17 @@ class VoiceLoop(
                         wakeStream = null
                     }
                     val stream = wakeStream ?: engines.spotter.createStream(engines.wakeKeywords(context)).also { wakeStream = it }
-                    // Keeps speech near a steady level, however far away you are.
                     val level = Audio.rms(frame)
+                    // Follows the room's background noise: drops quickly, rises slowly, so speech doesn't count as noise.
+                    noiseFloor = if (level < noiseFloor) noiseFloor * 0.8f + level * 0.2f else noiseFloor * 0.995f + level * 0.005f
+                    noiseFloor = noiseFloor.coerceIn(0.0005f, 0.05f)
+                    val loudEnough = level > maxOf(noiseFloor * WAKE_OVER_NOISE, WAKE_MIN_LEVEL)
+                    // The speech detector runs first, so a wake word is only accepted when a voice was really heard.
+                    val check = watcher ?: Collector(engines.newVad(VAD_SILENCE), WAKE_PAUSE_MS).also { watcher = it }
+                    val phrase = check.feed(frame)
+                    if (check.speechInLastFeed && loudEnough) lastSpeechFrame = frameIndex
+                    if (phrase != null || check.expired()) check.restart()
+
                     // A gentle boost for quiet speech. Strong boosts distort the voice and hurt detection.
                     if (level > 0.002f) wakeGain = (wakeGain * 0.9f + (0.05f / level).coerceIn(1f, 3f) * 0.1f)
                     stream.acceptWaveform(Audio.boosted(frame, wakeGain), SAMPLE_RATE)
@@ -617,17 +588,16 @@ class VoiceLoop(
                             break
                         }
                     }
-                    if (spotted) {
+                    if (spotted && frameIndex - lastSpeechFrame <= WAKE_SPEECH_FRAMES && isOwnerVoice(recentAudio(WAKE_SPEECH_FRAMES))) {
                         wakeUp()
                         listenRequested.set(true)
-                        watcher?.restart()
+                        check.restart()
                         continue
                     }
-                    // A second detector: Whisper checks short phrases, which handles names and accents better.
-                    val check = watcher ?: Collector(engines.newVad(VAD_SILENCE), WAKE_PAUSE_MS).also { watcher = it }
-                    val phrase = check.feed(frame)
-                    if (phrase != null || check.expired()) check.restart()
-                    if (phrase != null && phrase.size in MIN_WAKE_SAMPLES..MAX_WAKE_SAMPLES && !checking) {
+                    // A second, slower check with Moonshine catches the name when the fast detector misses it.
+                    if (phrase != null && phrase.size in MIN_WAKE_SAMPLES..MAX_WAKE_SAMPLES && !checking &&
+                        frameIndex - lastSpeechFrame <= WAKE_SPEECH_FRAMES
+                    ) {
                         checkForName(phrase, frameIndex)
                     }
                 }
@@ -671,21 +641,39 @@ class VoiceLoop(
         WakeUi.open(context)
     }
 
+    /** The last few frames of microphone audio, joined together. */
+    private fun recentAudio(frames: Int): FloatArray {
+        val parts = recent.toList().takeLast(frames).map { it.second }
+        val out = FloatArray(parts.sumOf { it.size })
+        var offset = 0
+        parts.forEach {
+            it.copyInto(out, offset)
+            offset += it.size
+        }
+        return out
+    }
+
+    /** With "Only wake for my voice" on, other voices, like a TV, can't wake the assistant. */
+    private fun isOwnerVoice(samples: FloatArray): Boolean {
+        if (!Features.wakeOnlyMyVoice(context) || !VoiceId.isEnrolled(context)) return true
+        return runCatching { VoiceId.matches(context, engines.embedding(samples)) }.getOrDefault(false)
+    }
+
     private fun checkForName(samples: FloatArray, endedAt: Long) {
         checking = true
         scope.launch(Dispatchers.Default) {
             try {
                 val name = Features.wakeName(context)
-                val text = engines.quickTranscribe(samples, "Hey $name.")
-                val rest = WakeName.heardIn(text, name) ?: return@launch
+                val text = engines.moonshineOnly(samples)
+                // Stricter than the command check: a greeting and the name, or the name said exactly.
+                val rest = WakeName.heardInStrict(text, name) ?: return@launch
+                if (!isOwnerVoice(samples)) return@launch
                 wakeUp()
                 if (rest.contains(' ')) {
                     busy = true
                     try {
-                        // The quick model only checks for the name. The command is heard again with the accurate one.
                         val heard = understand(samples)
-                        val command = WakeName.heardIn(heard.text, name)?.takeIf { it.contains(' ') } ?: rest
-                        onCommand(heard.copy(text = command))
+                        onCommand(heard.copy(text = rest))
                     } finally {
                         busy = false
                         if (AssistantRuntime.armed.value) AssistantRuntime.status.value = "Ready"
@@ -751,11 +739,16 @@ class VoiceLoop(
         private var speechStart = -1
         private var lastSpeech = -1
 
+        /** Whether the last frame fed in contained speech. */
+        var speechInLastFeed = false
+            private set
+
         init {
             preroll.forEach { add(it) }
         }
 
         private fun add(frame: FloatArray) {
+            speechInLastFeed = false
             audio += frame
             total += frame.size
             frame.forEach { pending.add(it) }
@@ -765,6 +758,7 @@ class VoiceLoop(
                 vad.acceptWaveform(window)
                 vadPosition += WINDOW
                 if (vad.isSpeechDetected()) {
+                    speechInLastFeed = true
                     if (speechStart < 0) speechStart = vadPosition - WINDOW
                     lastSpeech = vadPosition
                 }

@@ -123,7 +123,12 @@ object Features {
     fun userName(context: Context): String = prefs(context).getString("user_name", null).orEmpty()
     fun setUserName(context: Context, value: String) = prefs(context).edit().putString("user_name", value.trim().take(30)).apply()
 
-    fun speechEngine(context: Context): String = prefs(context).getString("engine", null) ?: SpeechEngine.AUTO
+    /** Whisper was removed, so an old Whisper choice becomes Auto. */
+    fun speechEngine(context: Context): String =
+        prefs(context).getString("engine", null)?.takeIf { it in setOf(SpeechEngine.GOOGLE, SpeechEngine.MOONSHINE) } ?: SpeechEngine.AUTO
+
+    fun wakeOnlyMyVoice(context: Context) = prefs(context).getBoolean("wake_my_voice", false)
+    fun setWakeOnlyMyVoice(context: Context, value: Boolean) = prefs(context).edit().putBoolean("wake_my_voice", value).apply()
     fun setSpeechEngine(context: Context, value: String) {
         prefs(context).edit().putString("engine", value).apply()
         GoogleStt.brokenThisSession = false
@@ -132,7 +137,6 @@ object Features {
     fun wakeName(context: Context): String = prefs(context).getString("name", null) ?: WakeName.DEFAULT
     fun setWakeName(context: Context, value: String) = prefs(context).edit().putString("name", value.trim()).apply()
 
-    /** The Whisper language code: en, hi, te, or auto. */
     /** The assistant understands English only. */
     @Suppress("UNUSED_PARAMETER")
     fun language(context: Context): String = "en"

@@ -396,7 +396,7 @@ object ContactMatcher {
     fun best(spoken: String, names: Collection<String>): String? = top(spoken, names).singleOrNull()
 }
 
-/** Hints that help Whisper spell common commands and your assistant's name correctly. */
+/** Example commands, shown as hints. */
 object SpeechPrompt {
     fun text(name: String): String =
         "Hey $name. Turn on Wi-Fi. Turn off mobile data. Turn on the flashlight. Turn on Bluetooth. " +
@@ -426,6 +426,27 @@ object WakeName {
         }
         return null
     }
+
+    /**
+     * The check used to wake the assistant from silence. It needs a greeting and the name,
+     * like "hey nova", or the name said exactly, so random sounds and words don't wake it.
+     * Returns the words spoken after the name, or null.
+     */
+    fun heardInStrict(text: String, name: String): String? {
+        val spoken = text.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
+        val parts = name.lowercase().split(' ').filter { it.isNotEmpty() }
+        if (parts.isEmpty() || spoken.size < parts.size) return null
+        val target = parts.joinToString("")
+        val allowed = if (target.length <= 5) 1 else 2
+        if (spoken.size > parts.size && spoken[0] in WAKE_GREETINGS) {
+            val candidate = spoken.subList(1, 1 + parts.size).joinToString("")
+            if (ContactMatcher.distance(candidate, target) <= allowed) return spoken.drop(1 + parts.size).joinToString(" ")
+        }
+        if (spoken.subList(0, parts.size).joinToString("") == target) return spoken.drop(parts.size).joinToString(" ")
+        return null
+    }
+
+    private val WAKE_GREETINGS = setOf("hey", "hi", "hello", "ok", "okay", "hay")
 
     private val allowed = Regex("^[A-Za-z]+( [A-Za-z]+)?$")
 
@@ -462,7 +483,7 @@ object WakeName {
             WakeSensitivity.LOW -> listOf("HEY")
         }
         val phrases = greetings.map { "$it $upper" }.toMutableList()
-        // The name on its own is left to the slower Whisper check. In testing it competed with "hey" plus the name.
+        // The name on its own is left to the slower Moonshine check. In testing it competed with "hey" plus the name.
         val lines = phrases.mapNotNull { line(tokenizer, it, sensitivity.boost, sensitivity.threshold) }
         return lines.takeIf { it.isNotEmpty() }?.joinToString("/")
     }

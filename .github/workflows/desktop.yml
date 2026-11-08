@@ -36,6 +36,7 @@ jobs:
           path: |
             app/src/main/assets/models
             desktop/libs
+            desktop-models
           retention-days: 1
   windows:
     needs: models
@@ -85,6 +86,7 @@ jobs:
           mkdir -p dist/PocketAssistant/app/native
           cp "$(find native-build -name whisperjni.dll | head -1)" dist/PocketAssistant/app/native/
           cp -r assets/app/src/main/assets/models dist/PocketAssistant/app/models
+          cp -r assets/desktop-models/whisper dist/PocketAssistant/app/models/whisper
           cp desktop/packaging/*.bat dist/
           du -sh dist
       - name: Run the real self-test on the packaged app

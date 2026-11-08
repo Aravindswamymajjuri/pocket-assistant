@@ -3,23 +3,19 @@
 set -euo pipefail
 
 SHERPA_VERSION=1.13.8
-WHISPER_CPP_TAG=v1.9.5
-WHISPER_CPP_COMMIT=d1be6fde11ac6e0407606b4e42fe72d34add8037
 BASE=https://github.com/k2-fsa/sherpa-onnx/releases/download
 WORK="${RUNNER_TEMP:-/tmp}/voice-models"
 OUT=app/src/main/assets/models
+# Whisper is used only by the laptop app, so it's kept out of the phone app.
+DESKTOP_OUT=desktop-models
 HASHES=scripts/models.sha256
 # Wake phrases must be upper case. Add one phrase per line to support more names.
 WAKE_PHRASES=${WAKE_PHRASES:-"HEY ASSISTANT"}
 
 mkdir -p "$WORK" app/libs
 rm -rf "$OUT"
-mkdir -p "$OUT"/moonshine "$OUT"/kws "$OUT"/vad "$OUT"/whisper "$OUT"/piper "$OUT"/speaker
-
-if [ ! -d app/src/main/cpp/whisper.cpp ]; then
-  git clone --quiet --depth 1 -b "$WHISPER_CPP_TAG" https://github.com/ggml-org/whisper.cpp app/src/main/cpp/whisper.cpp
-fi
-[ "$(git -C app/src/main/cpp/whisper.cpp rev-parse HEAD)" = "$WHISPER_CPP_COMMIT" ]
+rm -rf "$DESKTOP_OUT"
+mkdir -p "$OUT"/moonshine "$OUT"/kws "$OUT"/vad "$OUT"/piper "$OUT"/speaker "$DESKTOP_OUT"/whisper
 
 get() {
   local url=$1 name
@@ -32,7 +28,6 @@ get "$BASE/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.b
 get "$BASE/asr-models/silero_vad.onnx"
 get "$BASE/asr-models/sherpa-onnx-moonshine-base-en-int8.tar.bz2"
 get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin"
-get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin"
 get "$BASE/tts-models/vits-piper-en_US-lessac-medium.tar.bz2"
 get "$BASE/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
 
@@ -83,8 +78,7 @@ tar -xjf "$WORK/sherpa-onnx-moonshine-base-en-int8.tar.bz2" -C "$WORK"
 M="$WORK/sherpa-onnx-moonshine-base-en-int8"
 cp "$M/preprocess.onnx" "$M/encode.int8.onnx" "$M/uncached_decode.int8.onnx" "$M/cached_decode.int8.onnx" "$M/tokens.txt" "$OUT/moonshine/"
 
-cp "$WORK/ggml-base.en-q5_1.bin" "$OUT/whisper/ggml-base.en-q5_1.bin"
-cp "$WORK/ggml-tiny.en-q5_1.bin" "$OUT/whisper/ggml-tiny.en-q5_1.bin"
+cp "$WORK/ggml-base.en-q5_1.bin" "$DESKTOP_OUT/whisper/ggml-base.en-q5_1.bin"
 
 tar -xjf "$WORK/vits-piper-en_US-lessac-medium.tar.bz2" -C "$WORK"
 P="$WORK/vits-piper-en_US-lessac-medium"
@@ -93,4 +87,4 @@ cp "$P/tokens.txt" "$OUT/piper/tokens.txt"
 cp -r "$P/espeak-ng-data" "$OUT/piper/espeak-ng-data"
 
 cp "$WORK/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx" "$OUT/speaker/model.onnx"
-du -sh "$OUT"/* app/libs/*
+du -sh "$OUT"/* "$DESKTOP_OUT"/* app/libs/*

@@ -499,4 +499,14 @@ class SecurityTest {
         assertEquals(Tool.WEB_SEARCH, CommandRouter.route("search for cricket highlights")?.tool)
         assertNull(CommandRouter.route("what is the capital of France"))
     }
+
+    @Test fun wakeCheckIsStrict() {
+        assertEquals("", WakeName.heardInStrict("Hey Nova.", "Nova"))
+        assertEquals("call daddy", WakeName.heardInStrict("Hey Noah, call Daddy", "Nova"))
+        assertEquals("", WakeName.heardInStrict("Nova", "Nova"))
+        assertNull(WakeName.heardInStrict("Noah", "Nova"))
+        assertNull(WakeName.heardInStrict("a nova", "Nova"))
+        assertNull(WakeName.heardInStrict("the weather is nice", "Nova"))
+        assertNull(WakeName.heardInStrict("", "Nova"))
+    }
 }

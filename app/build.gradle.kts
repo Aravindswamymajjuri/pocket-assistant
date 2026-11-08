@@ -11,14 +11,10 @@ android {
         applicationId = "dev.aravind.assistant"
         minSdk = 31
         targetSdk = 32
-        versionCode = 15
-        versionName = "0.7.0"
+        versionCode = 16
+        versionName = "0.7.1"
         ndk { abiFilters += "arm64-v8a" }
-        externalNativeBuild {
-            cmake { arguments += listOf("-DCMAKE_BUILD_TYPE=Release", "-DANDROID_ARM_NEON=ON") }
-        }
     }
-    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt") } }
     signingConfigs {
         create("release") {
             storeFile = file(System.getenv("SIGNING_STORE_FILE") ?: "release.jks")

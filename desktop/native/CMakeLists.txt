@@ -16,7 +16,6 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 find_package(JNI REQUIRED)
 add_subdirectory(${CMAKE_SOURCE_DIR}/whisper.cpp whisper-build)
 
-# The phone and laptop apps share the same JNI code.
-add_library(whisperjni SHARED ${CMAKE_SOURCE_DIR}/../../app/src/main/cpp/whisper_jni.cpp)
+add_library(whisperjni SHARED ${CMAKE_SOURCE_DIR}/whisper_jni.cpp)
 target_include_directories(whisperjni PRIVATE ${JNI_INCLUDE_DIRS})
 target_link_libraries(whisperjni PRIVATE whisper)
