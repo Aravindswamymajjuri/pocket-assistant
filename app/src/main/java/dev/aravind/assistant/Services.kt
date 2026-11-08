@@ -23,6 +23,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import dev.aravind.assistant.policy.BlockedApps
 import dev.aravind.assistant.policy.SecretRedactor
+import dev.aravind.assistant.policy.SpeechPrompt
 import dev.aravind.assistant.policy.WakeName
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -157,6 +158,51 @@ class AssistantService : Service() {
         }
         val samples = active.capture(9_000) ?: return null
         return withContext(Dispatchers.Default) { active.understand(samples, "en") }
+    }
+
+    @Volatile
+    private var lastTest: FloatArray? = null
+
+    /** Records one phrase, then shows what each engine heard and how long it took. */
+    fun speechTest(report: (String) -> Unit) {
+        val active = loop ?: return report("Turn on the assistant first")
+        val voice = engines ?: return report("The voice system is still starting")
+        scope.launch {
+            report("Speak now, for example: set an alarm for 7:15 pm today")
+            val samples = active.capture(15_000)
+            if (samples == null || samples.isEmpty()) {
+                report("I didn't hear any speech. Check the microphone permission, and speak a little closer")
+                return@launch
+            }
+            lastTest = samples
+            report("Recognizing...")
+            val text = withContext(Dispatchers.Default) {
+                val peak = samples.maxOf { kotlin.math.abs(it) }
+                val loudness = (Audio.rms(samples) * 1000).toInt()
+                val prompt = SpeechPrompt.text(Features.wakeName(this@AssistantService))
+                var start = System.currentTimeMillis()
+                val moon = runCatching { voice.moonshineOnly(samples) }.getOrElse { "failed: ${it.javaClass.simpleName}" }
+                val moonMs = System.currentTimeMillis() - start
+                start = System.currentTimeMillis()
+                val whisper = runCatching { voice.whisperOnly(samples, prompt) }.getOrElse { "failed: ${it.javaClass.simpleName}" }
+                val whisperMs = System.currentTimeMillis() - start
+                val level = when {
+                    peak < 0.05f -> "very quiet. Speak closer to the phone"
+                    peak > 0.98f -> "too loud and distorted. Move a little away"
+                    else -> "good"
+                }
+                "Recorded %.1f s. Volume: %s (peak %d%%, level %d)\nMoonshine, %d ms: %s\nWhisper, %d ms: %s".format(
+                    samples.size / 16000f, level, (peak * 100).toInt(), loudness, moonMs, moon, whisperMs, whisper,
+                )
+            }
+            report(text)
+        }
+    }
+
+    fun playLastTest(): Boolean {
+        val samples = lastTest ?: return false
+        scope.launch(Dispatchers.Default) { Audio.play(samples, 16_000) }
+        return true
     }
 
     fun onWakeNameChanged() {

@@ -546,6 +546,18 @@ private fun HomeScreen(activity: FragmentActivity) {
             },
             style = MaterialTheme.typography.bodySmall,
         )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    val service = AssistantService.instance
+                    if (service == null) message = "Turn on the assistant first"
+                    else service.speechTest { text -> activity.runOnUiThread { message = text } }
+                },
+            ) { Text("Speech test") }
+            OutlinedButton(
+                onClick = { if (AssistantService.instance?.playLastTest() != true) message = "Run the speech test first" },
+            ) { Text("Play recording") }
+        }
         val sensitivity = remember(refreshKey) { Features.wakeSensitivity(activity) }
         Text("Wake sensitivity", style = MaterialTheme.typography.bodyLarge)
         Text("Higher wakes more easily, but may also wake by mistake", style = MaterialTheme.typography.bodySmall)

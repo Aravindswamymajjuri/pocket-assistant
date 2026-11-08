@@ -14,8 +14,6 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.ToneGenerator
-import android.media.audiofx.AutomaticGainControl
-import android.media.audiofx.NoiseSuppressor
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.KeywordSpotter
 import com.k2fsa.sherpa.onnx.KeywordSpotterConfig
@@ -58,6 +56,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 private const val SAMPLE_RATE = 16_000
 private const val MIN_WAKE_SAMPLES = SAMPLE_RATE * 2 / 5
 private const val MAX_WAKE_SAMPLES = SAMPLE_RATE * 3
+
+// The detector flips quickly. The pause you must leave before a phrase ends is set separately below.
+private const val VAD_SILENCE = 0.2f
+private const val END_PAUSE_MS = 650
+private const val WAKE_PAUSE_MS = 300
 
 /** Voice models ship in the APK and are unpacked to private storage on first use. */
 object VoiceAssets {
@@ -181,6 +184,12 @@ class VoiceEngines(context: Context) {
         }
     }
 
+    /** For the speech test: each engine on its own, with no fallback. */
+    fun moonshineOnly(samples: FloatArray): String = moonshineText(Audio.normalized(samples))
+
+    fun whisperOnly(samples: FloatArray, prompt: String): String =
+        WhisperCpp.transcribe("$root/whisper/ggml-base.en-q5_1.bin", Audio.normalized(samples), "en", prompt)
+
     /** Moonshine is used unless Whisper was chosen. Whisper is also the backup if Moonshine fails. */
     fun transcribe(samples: FloatArray, language: String, prompt: String, engine: String = "auto"): String {
         val audio = Audio.normalized(samples)
@@ -221,6 +230,27 @@ object Audio {
     /** Raises a short frame for the wake word, keeping loud sounds from clipping. */
     fun boosted(frame: FloatArray, gain: Float): FloatArray =
         FloatArray(frame.size) { (frame[it] * gain).coerceIn(-1f, 1f) }
+
+    /** Plays a recording back, so you can hear what the app heard. */
+    fun play(samples: FloatArray, rate: Int) {
+        if (samples.isEmpty()) return
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build())
+            .setAudioFormat(
+                AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT).setSampleRate(rate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build(),
+            )
+            .setBufferSizeInBytes(samples.size * 4)
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+        try {
+            track.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+            track.play()
+            Thread.sleep(samples.size * 1000L / rate + 200)
+        } finally {
+            track.release()
+        }
+    }
 
     fun rms(frame: FloatArray): Float =
         if (frame.isEmpty()) 0f else kotlin.math.sqrt(frame.fold(0f) { sum, s -> sum + s * s } / frame.size)
@@ -404,6 +434,13 @@ class VoiceLoop(
     @Volatile
     private var checking = false
 
+    // Recent microphone audio, so speech said right after the wake word isn't lost.
+    private val recent = ArrayDeque<Pair<Long, FloatArray>>()
+    private var frameIndex = 0L
+
+    @Volatile
+    private var prerollFrom = -1L
+
     /** Applies a new wake name without restarting the assistant. */
     fun reloadWakeName() {
         wakeChanged = true
@@ -444,9 +481,7 @@ class VoiceLoop(
             created.release()
             return null
         }
-        val session = created.audioSessionId
-        if (AutomaticGainControl.isAvailable()) runCatching { AutomaticGainControl.create(session)?.enabled = true }
-        if (NoiseSuppressor.isAvailable()) runCatching { NoiseSuppressor.create(session)?.enabled = true }
+        // The voice recognition source is tuned for speech models. Extra phone filters can distort words, so none are added.
         created.startRecording()
         record = created
         return created
@@ -495,6 +530,9 @@ class VoiceLoop(
                 if (speaking) continue
                 for (i in 0 until count) floats[i] = shorts[i] / 32768f
                 val frame = floats.copyOf(count)
+                frameIndex++
+                recent.addLast(frameIndex to frame)
+                while (recent.size > 50) recent.removeFirst()
 
                 if (collector == null && wantListen && !wantCapture && GoogleStt.inUse(context)) {
                     listenRequested.set(false)
@@ -505,16 +543,22 @@ class VoiceLoop(
                 }
                 if (collector == null && (wantCapture || wantListen)) {
                     listenRequested.set(false)
-                    collector = Collector(engines.newVad(0.5f))
+                    val from = prerollFrom
+                    prerollFrom = -1L
+                    // After a wake word found by the name check, start from where the wake phrase ended.
+                    val preroll = if (from >= 0) recent.filter { it.first > from && it.first < frameIndex }.map { it.second } else emptyList()
+                    collector = Collector(engines.newVad(VAD_SILENCE), END_PAUSE_MS, preroll)
+                    watcher?.restart()
                     AssistantRuntime.status.value = "Listening"
                 }
                 val active = collector
                 if (active != null) {
-                    val samples = active.feed(frame)
-                    if (samples != null || active.expired()) {
+                    var samples = active.feed(frame)
+                    if (samples == null && active.expired()) samples = active.partial() ?: FloatArray(0)
+                    if (samples != null) {
                         active.close()
                         collector = null
-                        deliver(samples)
+                        deliver(samples.takeIf { it.isNotEmpty() })
                     }
                     continue
                 }
@@ -546,10 +590,12 @@ class VoiceLoop(
                         continue
                     }
                     // A second detector: Whisper checks short phrases, which handles names and accents better.
-                    val check = watcher ?: Collector(engines.newVad(0.3f)).also { watcher = it }
+                    val check = watcher ?: Collector(engines.newVad(VAD_SILENCE), WAKE_PAUSE_MS).also { watcher = it }
                     val phrase = check.feed(frame)
                     if (phrase != null || check.expired()) check.restart()
-                    if (phrase != null && phrase.size in MIN_WAKE_SAMPLES..MAX_WAKE_SAMPLES && !checking) checkForName(phrase)
+                    if (phrase != null && phrase.size in MIN_WAKE_SAMPLES..MAX_WAKE_SAMPLES && !checking) {
+                        checkForName(phrase, frameIndex)
+                    }
                 }
             }
         } finally {
@@ -589,7 +635,7 @@ class VoiceLoop(
         WakeUi.open(context)
     }
 
-    private fun checkForName(samples: FloatArray) {
+    private fun checkForName(samples: FloatArray, endedAt: Long) {
         checking = true
         scope.launch(Dispatchers.Default) {
             try {
@@ -609,6 +655,7 @@ class VoiceLoop(
                         if (AssistantRuntime.armed.value) AssistantRuntime.status.value = "Ready"
                     }
                 } else {
+                    prerollFrom = endedAt
                     listenRequested.set(true)
                 }
             } catch (e: Exception) {
@@ -655,45 +702,74 @@ class VoiceLoop(
         }
     }
 
-    /** Collects one phrase, ending after a pause in speech. */
-    private class Collector(private val vad: Vad) {
+    /**
+     * Collects one phrase. The speech detector only decides when you've finished. The audio itself is
+     * kept whole, from just before your first word, so short pauses and first syllables aren't lost.
+     */
+    private class Collector(private val vad: Vad, private val endPauseMs: Int, preroll: List<FloatArray> = emptyList()) {
         private var started = System.currentTimeMillis()
         private val pending = ArrayList<Float>()
-        private val speech = ArrayList<FloatArray>()
+        private val audio = ArrayList<FloatArray>()
+        private var total = 0
+        private var vadPosition = 0
+        private var speechStart = -1
+        private var lastSpeech = -1
 
-        fun feed(frame: FloatArray): FloatArray? {
+        init {
+            preroll.forEach { add(it) }
+        }
+
+        private fun add(frame: FloatArray) {
+            audio += frame
+            total += frame.size
             frame.forEach { pending.add(it) }
             while (pending.size >= WINDOW) {
                 val window = FloatArray(WINDOW) { pending[it] }
                 pending.subList(0, WINDOW).clear()
                 vad.acceptWaveform(window)
+                vadPosition += WINDOW
+                if (vad.isSpeechDetected()) {
+                    if (speechStart < 0) speechStart = vadPosition - WINDOW
+                    lastSpeech = vadPosition
+                }
+                while (!vad.empty()) vad.pop()
             }
-            while (!vad.empty()) {
-                speech += vad.front().samples
-                vad.pop()
-            }
-            if (speech.isNotEmpty() && !vad.isSpeechDetected()) return merged()
+        }
+
+        fun feed(frame: FloatArray): FloatArray? {
+            add(frame)
+            if (speechStart >= 0 && vadPosition - lastSpeech >= endPauseMs * SAMPLE_RATE / 1000) return slice()
             return null
         }
 
+        /** Returns what was said so far once time runs out, rather than dropping it. */
         fun expired(): Boolean {
             val elapsed = System.currentTimeMillis() - started
-            return (speech.isEmpty() && !vad.isSpeechDetected() && elapsed > 7_000) || elapsed > 20_000
+            return (speechStart < 0 && elapsed > 7_000) || elapsed > 15_000
         }
 
-        private fun merged(): FloatArray {
-            val out = FloatArray(speech.sumOf { it.size })
+        fun partial(): FloatArray? = if (speechStart >= 0) slice() else null
+
+        private fun slice(): FloatArray {
+            val all = FloatArray(total)
             var offset = 0
-            speech.forEach {
-                it.copyInto(out, offset)
+            audio.forEach {
+                it.copyInto(all, offset)
                 offset += it.size
             }
-            return out
+            // Detection lags behind the real start of speech, so earlier audio is kept too.
+            val from = (speechStart - SAMPLE_RATE / 2).coerceAtLeast(0)
+            val to = (lastSpeech + SAMPLE_RATE / 4).coerceAtMost(total)
+            return all.copyOfRange(from, to)
         }
 
         fun restart() {
             pending.clear()
-            speech.clear()
+            audio.clear()
+            total = 0
+            vadPosition = 0
+            speechStart = -1
+            lastSpeech = -1
             started = System.currentTimeMillis()
             vad.reset()
         }
