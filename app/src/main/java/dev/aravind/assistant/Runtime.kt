@@ -33,6 +33,9 @@ class AssistantApp : Application()
 object AssistantRuntime {
     val armed = MutableStateFlow(false)
     val status = MutableStateFlow("Off")
+
+    /** Which speech engine produced the last transcript, shown on the listening card. */
+    val lastEngine = MutableStateFlow("")
     val transcript = MutableStateFlow<List<String>>(emptyList())
     val rateLimiter = OutboundRateLimiter(System::currentTimeMillis)
 

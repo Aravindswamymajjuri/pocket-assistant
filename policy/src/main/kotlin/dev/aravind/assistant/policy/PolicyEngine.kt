@@ -400,7 +400,8 @@ object ContactMatcher {
 object SpeechPrompt {
     fun text(name: String): String =
         "Hey $name. Turn on Wi-Fi. Turn off mobile data. Turn on the flashlight. Turn on Bluetooth. " +
-            "Call Daddy. Call Amma. Open WhatsApp. Set an alarm for 7 AM. Set brightness to 50 percent. Scroll down. Go back."
+            "Call Daddy. Call Amma. Open WhatsApp. Set an alarm for 7 AM. Set brightness to 50 percent. Scroll down. Go back. " +
+            "Read my screen. Explain my screen. Read my notifications. Lock my phone. Open reels."
 }
 
 object WakeName {

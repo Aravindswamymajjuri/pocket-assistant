@@ -468,4 +468,16 @@ class SecurityTest {
         assertTrue(ScreenAgent.isRisky("Pay now"))
         assertFalse(ScreenAgent.isRisky("Settings"))
     }
+
+    @Test fun misheardCommandsAreRecovered() {
+        assertEquals("read my screen", FuzzyCommand.match("The reed mescaline"))
+        assertEquals("read my screen", FuzzyCommand.match("red my scream"))
+        assertEquals("lock my phone", FuzzyCommand.match("Lock my fone."))
+        assertEquals("scroll down", FuzzyCommand.match("scroll town"))
+        assertNull(FuzzyCommand.match("go hum"))
+        assertNull(FuzzyCommand.match("What is the capital of France?"))
+        assertNull(FuzzyCommand.match("Tell me a joke about cats"))
+        assertNull(FuzzyCommand.match("hello"))
+        assertEquals(Tool.READ_SCREEN, CommandRouter.route(FuzzyCommand.match("The reed mescaline")!!)?.tool)
+    }
 }

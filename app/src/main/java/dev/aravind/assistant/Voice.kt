@@ -194,8 +194,12 @@ class VoiceEngines(context: Context) {
     fun transcribe(samples: FloatArray, language: String, prompt: String, engine: String = "auto"): String {
         val audio = Audio.normalized(samples)
         if (engine != SpeechEngine.WHISPER) {
-            runCatching { moonshineText(audio) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+            runCatching { moonshineText(audio) }.getOrNull()?.takeIf { it.isNotBlank() }?.let {
+                AssistantRuntime.lastEngine.value = "Moonshine"
+                return it
+            }
         }
+        AssistantRuntime.lastEngine.value = "Whisper"
         return WhisperCpp.transcribe("$root/whisper/ggml-base.en-q5_1.bin", audio, "en", prompt)
     }
 
@@ -612,6 +616,7 @@ class VoiceLoop(
             AssistantRuntime.status.value = "Listening"
             when (val result = GoogleStt.listen(context, Features.language(context))) {
                 is GoogleStt.Result.Text -> {
+                    AssistantRuntime.lastEngine.value = if (GoogleStt.onDeviceAvailable(context)) "Google on-device" else "Google"
                     AssistantRuntime.status.value = "Working"
                     val name = Features.wakeName(context)
                     val rest = WakeName.heardIn(result.text, name)

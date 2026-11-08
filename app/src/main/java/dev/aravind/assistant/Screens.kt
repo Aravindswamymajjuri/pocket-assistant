@@ -264,6 +264,10 @@ private fun WakeScreen(onClose: () -> Unit) {
                 )
                 Text(if (status == "Ready") "Done" else status, style = MaterialTheme.typography.titleLarge)
                 if (heard.isNotEmpty()) Text(heard, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+                val engineName by AssistantRuntime.lastEngine.collectAsState()
+                if (heard.isNotEmpty() && engineName.isNotEmpty()) {
+                    Text("Heard with $engineName", style = MaterialTheme.typography.bodySmall)
+                }
                 if (reply.isNotEmpty()) Text(reply, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
                 OutlinedButton(
                     onClick = {

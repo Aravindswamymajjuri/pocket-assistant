@@ -6,6 +6,7 @@ import dev.aravind.assistant.policy.Category
 import dev.aravind.assistant.policy.CommandRouter
 import dev.aravind.assistant.policy.ConfirmationAuthority
 import dev.aravind.assistant.policy.Decision
+import dev.aravind.assistant.policy.FuzzyCommand
 import dev.aravind.assistant.policy.ModelOutput
 import dev.aravind.assistant.policy.ModelOutputParser
 import dev.aravind.assistant.policy.PolicyContext
@@ -43,7 +44,10 @@ class Agent(
 
         for (step in steps) {
             if (!AssistantRuntime.isActive()) return
-            val routed = CommandRouter.route(step, contacts)
+            val routed = CommandRouter.route(step, contacts) ?: FuzzyCommand.match(step)?.let { guess ->
+                AssistantRuntime.say("Understood as: $guess")
+                CommandRouter.route(guess, contacts)
+            }
             val calls: List<ToolCall> = if (routed != null) {
                 listOf(routed)
             } else {
