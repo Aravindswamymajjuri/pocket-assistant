@@ -196,6 +196,7 @@ object CommandRouter {
             return "set_timer" to mapOf("seconds" to it[1].toLong() * unit)
         }
         alarm(t)?.let { return it }
+        webQuestion(t)?.let { return "web_answer" to mapOf("query" to it) }
         find("(?:search|find|play)(?: for)? (.+?) (?:on|in) you ?tube")?.let { return "web_search" to mapOf("query" to it[1], "site" to "youtube") }
         find("(?:search|google|look up|find)(?: on google| in google)?(?: for| about)? (.+?)(?: on google| in google| on the internet| on internet| online| on the web)?")?.let {
             return "web_search" to mapOf("query" to it[1], "site" to "google")
@@ -235,6 +236,21 @@ object CommandRouter {
             if (m.groupValues[2].toInt() < 60) "${m.groupValues[1]}:${m.groupValues[2]}" else m.value
         }
         return t.replace(Regex("\\s+"), " ").trim()
+    }
+
+    /** Questions whose answers change over time, so they're looked up instead of guessed. */
+    private val current = Regex(
+        "(?i)^(?:who (?:won|is winning|will win|lost)|which team (?:won|is winning)|what(?:'s| is| was) the (?:score|result|final score|latest)|" +
+            "score of|result of|(?:the )?latest (?:news|score|scores|updates?)|news (?:about|on|today)|today'?s (?:news|weather|score|match|headlines)|" +
+            "(?:what(?:'s| is) the )?(?:weather|temperature|forecast)\\b|(?:what(?:'s| is) the )?(?:price|rate|cost) of|" +
+            "how much (?:is|does|did) .+ cost|when is the next|who is the (?:current )?(?:prime minister|president|chief minister|ceo|captain)|" +
+            "(?:ask|check) google|find out|look up .+ and tell me|tell me the (?:latest|score|news)).*",
+    )
+
+    private fun webQuestion(t: String): String? {
+        if (!current.matches(t)) return null
+        return t.replace(Regex("(?i)^(?:ask google|check google|find out|look up)\\s+(?:about |for |whether |if )?"), "")
+            .replace(Regex("(?i)\\s+and tell me$"), "").trim().takeIf { it.isNotEmpty() }
     }
 
     private fun screen(t: String): Pair<String, Map<String, Any?>>? {

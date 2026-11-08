@@ -489,4 +489,14 @@ class SecurityTest {
         assertNull(CommandRouter.route("don't call daddy"))
         assertNull(CommandRouter.route("and"))
     }
+
+    @Test fun currentQuestionsAreLookedUp() {
+        assertEquals(Tool.WEB_ANSWER, CommandRouter.route("who won the ind vs nz match")?.tool)
+        assertEquals("who won the ind vs nz match", CommandRouter.route("Who won the IND vs NZ match?")?.text("query")?.lowercase())
+        assertEquals(Tool.WEB_ANSWER, CommandRouter.route("what's the weather in Hyderabad today")?.tool)
+        assertEquals(Tool.WEB_ANSWER, CommandRouter.route("latest news about ISRO")?.tool)
+        assertEquals("gold price today", CommandRouter.route("find out gold price today")?.text("query"))
+        assertEquals(Tool.WEB_SEARCH, CommandRouter.route("search for cricket highlights")?.tool)
+        assertNull(CommandRouter.route("what is the capital of France"))
+    }
 }

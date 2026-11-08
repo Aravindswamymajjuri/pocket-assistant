@@ -244,7 +244,10 @@ private fun WakeScreen(onClose: () -> Unit) {
             onClose()
         }
     }
-    val heard = transcript.lastOrNull { it.startsWith("You: ") }?.removePrefix("You: ").orEmpty()
+    val partial by AssistantRuntime.partial.collectAsState()
+    val final = transcript.lastOrNull { it.startsWith("You: ") }?.removePrefix("You: ").orEmpty()
+    // While you're speaking, the words so far are shown, like other voice assistants.
+    val heard = if (status == "Listening" && partial.isNotBlank()) partial else final
     val reply = transcript.lastOrNull { it.startsWith("Assistant: ") }?.removePrefix("Assistant: ").orEmpty()
     // A card at the bottom, so the app you're using stays visible above it.
     Box(Modifier.fillMaxSize().clickable(onClick = onClose), contentAlignment = Alignment.BottomCenter) {
@@ -335,6 +338,7 @@ private fun HomeScreen(activity: FragmentActivity) {
     }
     var modelPath by remember { mutableStateOf(ModelStore.path(activity).orEmpty()) }
     var wakeName by remember { mutableStateOf(Features.wakeName(activity)) }
+    var userName by remember { mutableStateOf(Features.userName(activity)) }
     var allowedNumbers by remember { mutableStateOf(CallRules.allowedNumbers(activity)) }
     val paused by AssistantRuntime.pausedUntil.collectAsState()
     val modelBrowser = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -420,6 +424,10 @@ private fun HomeScreen(activity: FragmentActivity) {
             }
         }
 
+        val partialText by AssistantRuntime.partial.collectAsState()
+        if (status == "Listening" && partialText.isNotBlank()) {
+            Text(partialText, style = MaterialTheme.typography.titleMedium)
+        }
         if (transcript.isNotEmpty()) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -500,6 +508,20 @@ private fun HomeScreen(activity: FragmentActivity) {
 
         HorizontalDivider()
         Text("Voice", style = MaterialTheme.typography.titleSmall)
+        OutlinedTextField(
+            value = userName,
+            onValueChange = { userName = it },
+            label = { Text("Your name") },
+            supportingText = { Text("The assistant will call you this") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedButton(
+            onClick = {
+                Features.setUserName(activity, userName)
+                message = if (userName.isBlank()) "Name cleared" else "Hello, ${userName.trim()}"
+            },
+            Modifier.fillMaxWidth(),
+        ) { Text("Save your name") }
         val wakeOn = remember(refreshKey) { Features.wakeWord(activity) }
         OutlinedTextField(
             value = wakeName,

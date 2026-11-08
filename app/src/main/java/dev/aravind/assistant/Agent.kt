@@ -27,6 +27,7 @@ class Agent(
     private val listen: suspend () -> Heard?,
 ) {
     private val executor = ToolExecutor(context)
+    private var greeted = false
 
     suspend fun handle(heard: Heard) {
         val utterance = heard.text
@@ -36,6 +37,7 @@ class Agent(
             return
         }
         val limits = TaskLimits(System::currentTimeMillis)
+        greeted = false
         var tainted = false
 
         // Splitting stops at the start of a message, so message text is never cut up.
@@ -141,7 +143,10 @@ class Agent(
         }
         Gates.markUsed(context, call.tool.category)
         Audit.log(context, "done:${call.tool.id}")
-        speak(result)
+        // Uses your name for the first reply of a request, like "OK Aravind, flashlight on".
+        val name = Features.userName(context)
+        speak(if (name.isNotBlank() && !greeted && call.tool !in LONG_ANSWERS) "OK $name, $result" else result)
+        greeted = true
         return true
     }
 
@@ -150,7 +155,8 @@ class Agent(
             Tool.FLASHLIGHT, Tool.VOLUME, Tool.BRIGHTNESS, Tool.DO_NOT_DISTURB, Tool.SET_ALARM, Tool.SET_TIMER, Tool.READ_NOTIFICATIONS,
             Tool.RINGER_MODE,
         )
-        val READS_UNTRUSTED = setOf(Tool.READ_NOTIFICATIONS, Tool.READ_SCREEN, Tool.SCREEN_TASK)
+        val READS_UNTRUSTED = setOf(Tool.READ_NOTIFICATIONS, Tool.READ_SCREEN, Tool.SCREEN_TASK, Tool.WEB_ANSWER)
+        val LONG_ANSWERS = setOf(Tool.READ_NOTIFICATIONS, Tool.READ_SCREEN, Tool.WEB_ANSWER)
         val NO = Regex("\\b(no|nope|cancel|stop|don't|dont|wait|vaddu|nahi|mat)\\b")
         val YES = Regex("\\b(yes|yeah|yep|yup|send|send it|confirm|ok|okay|sure|do it|go ahead|haan|ha|avunu|sare|sari)\\b")
     }

@@ -68,6 +68,7 @@ class ToolExecutor(private val context: Context) {
         Tool.SEND_SMS -> sendSms(call.text("to"), call.text("body"))
         Tool.SEND_WHATSAPP -> sendWhatsApp(call.text("to"), call.text("body"))
         Tool.PLACE_CALL -> placeCall(call.text("to"))
+        Tool.WEB_ANSWER -> webAnswer(call.text("query"))
         Tool.OPEN_CHAT -> openChat(call.text("contact"), call.args["app"] as? String ?: "whatsapp")
         Tool.APP_SECTION -> appSection(AppSections.ALL.getValue(call.text("section")))
         Tool.READ_SCREEN -> readScreen(call.args["explain"] as? Boolean ?: false, utterance)
@@ -441,6 +442,45 @@ class ToolExecutor(private val context: Context) {
         } catch (e: IllegalStateException) {
             "Set up the Gemma model to get explanations. Here's what's on the screen: " + text.take(500)
         }
+    }
+
+    /**
+     * Searches Google in your browser and reads the answer from the results page.
+     * This app has no internet access itself. The search goes through your browser.
+     */
+    private suspend fun webAnswer(query: String): String {
+        val service = AutomationService.instance ?: return "Turn on the Accessibility Service for Pocket Assistant first"
+        val own = context.packageName
+        launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + URLEncoder.encode(query, "UTF-8"))))
+        val keywords = query.lowercase().split(Regex("[^a-z0-9]+")).filter { it.length > 2 && it !in STOP_WORDS }
+        var lastSize = -1
+        var text = ""
+        for (attempt in 0 until 24) {
+            delay(500)
+            if (service.targetPackage() == own) continue
+            val items = service.screenItems()?.filter { (item, _) ->
+                item.kind == "text" || (item.kind == "button" && item.label.length >= 20)
+            } ?: continue
+            val joined = items.joinToString("\n") { it.first.label }
+            val relevant = keywords.isEmpty() || keywords.any { joined.lowercase().contains(it) }
+            // Waits until the page has loaded and stopped changing.
+            if (relevant && joined.length > 200 && joined.length == lastSize) {
+                text = SecretRedactor.redact(joined)
+                break
+            }
+            lastSize = joined.length
+        }
+        if (text.isEmpty()) return "I opened the Google results, but couldn't read them. They're on your screen now"
+        return try {
+            GemmaEngine.answerFromSearch(context, query, text).trim().take(500)
+        } catch (e: IllegalStateException) {
+            val lines = text.lines().filter { line -> line.length >= 20 && keywords.any { line.lowercase().contains(it) } }.take(2)
+            if (lines.isEmpty()) "The results are on your screen" else "Here's what Google shows: " + lines.joinToString(". ")
+        }
+    }
+
+    private companion object {
+        val STOP_WORDS = setOf("the", "and", "what", "who", "when", "where", "how", "was", "were", "today", "latest", "tell", "about")
     }
 
     /** Does a task inside the open app, one checked step at a time, for at most six steps. */

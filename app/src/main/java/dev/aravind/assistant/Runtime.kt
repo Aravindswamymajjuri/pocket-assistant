@@ -34,6 +34,9 @@ object AssistantRuntime {
     val armed = MutableStateFlow(false)
     val status = MutableStateFlow("Off")
 
+    /** Words recognized so far while you're still speaking. */
+    val partial = MutableStateFlow("")
+
     /** Which speech engine produced the last transcript, shown on the listening card. */
     val lastEngine = MutableStateFlow("")
     val transcript = MutableStateFlow<List<String>>(emptyList())
@@ -116,6 +119,9 @@ object Features {
     fun wakeSensitivity(context: Context): WakeSensitivity =
         runCatching { WakeSensitivity.valueOf(prefs(context).getString("sensitivity", null) ?: "NORMAL") }.getOrDefault(WakeSensitivity.NORMAL)
     fun setWakeSensitivity(context: Context, value: WakeSensitivity) = prefs(context).edit().putString("sensitivity", value.name).apply()
+
+    fun userName(context: Context): String = prefs(context).getString("user_name", null).orEmpty()
+    fun setUserName(context: Context, value: String) = prefs(context).edit().putString("user_name", value.trim().take(30)).apply()
 
     fun speechEngine(context: Context): String = prefs(context).getString("engine", null) ?: SpeechEngine.AUTO
     fun setSpeechEngine(context: Context, value: String) {

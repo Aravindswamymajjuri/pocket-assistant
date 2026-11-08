@@ -173,7 +173,9 @@ class VoiceEngines(context: Context) {
         )
     }
 
-    private fun moonshineText(samples: FloatArray): String {
+    private val moonshineLock = Any()
+
+    private fun moonshineText(samples: FloatArray): String = synchronized(moonshineLock) {
         val stream = moonshine.createStream()
         try {
             stream.acceptWaveform(samples, SAMPLE_RATE)
@@ -362,7 +364,10 @@ object GoogleStt {
             override fun onEndOfSpeech() {
                 AssistantRuntime.status.value = "Working"
             }
-            override fun onPartialResults(partialResults: Bundle?) = Unit
+            override fun onPartialResults(partialResults: Bundle?) {
+                partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                    ?.takeIf { it.isNotBlank() }?.let { AssistantRuntime.partial.value = it }
+            }
             override fun onEvent(eventType: Int, params: Bundle?) = Unit
         })
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
@@ -370,6 +375,7 @@ object GoogleStt {
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE, tag(language))
             .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
         try {
             recognizer.startListening(intent)
@@ -444,6 +450,10 @@ class VoiceLoop(
 
     @Volatile
     private var prerollFrom = -1L
+
+    @Volatile
+    private var partialBusy = false
+    private var partialFrames = 0
 
     /** Applies a new wake name without restarting the assistant. */
     fun reloadWakeName() {
@@ -552,12 +562,32 @@ class VoiceLoop(
                     // After a wake word found by the name check, start from where the wake phrase ended.
                     val preroll = if (from >= 0) recent.filter { it.first > from && it.first < frameIndex }.map { it.second } else emptyList()
                     collector = Collector(engines.newVad(VAD_SILENCE), END_PAUSE_MS, preroll)
+                    AssistantRuntime.partial.value = ""
+                    partialFrames = 0
                     watcher?.restart()
                     AssistantRuntime.status.value = "Listening"
                 }
                 val active = collector
                 if (active != null) {
                     var samples = active.feed(frame)
+                    // While you speak, the words so far are shown about once a second.
+                    if (samples == null && captureRequest == null && Features.speechEngine(context) != SpeechEngine.WHISPER) {
+                        partialFrames++
+                        if (partialFrames >= 8 && !partialBusy) {
+                            active.snapshot()?.let { snap ->
+                                partialFrames = 0
+                                partialBusy = true
+                                scope.launch(Dispatchers.Default) {
+                                    try {
+                                        val text = runCatching { engines.moonshineOnly(snap) }.getOrDefault("")
+                                        if (text.isNotBlank()) AssistantRuntime.partial.value = text
+                                    } finally {
+                                        partialBusy = false
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if (samples == null && active.expired()) samples = active.partial() ?: FloatArray(0)
                     if (samples != null) {
                         active.close()
@@ -614,6 +644,7 @@ class VoiceLoop(
     private suspend fun listenWithGoogle() {
         try {
             AssistantRuntime.status.value = "Listening"
+            AssistantRuntime.partial.value = ""
             when (val result = GoogleStt.listen(context, Features.language(context))) {
                 is GoogleStt.Result.Text -> {
                     AssistantRuntime.lastEngine.value = if (GoogleStt.onDeviceAvailable(context)) "Google on-device" else "Google"
@@ -755,7 +786,10 @@ class VoiceLoop(
 
         fun partial(): FloatArray? = if (speechStart >= 0) slice() else null
 
-        private fun slice(): FloatArray {
+        /** Everything from just before your first word up to now, for showing words as you speak. */
+        fun snapshot(): FloatArray? = if (speechStart >= 0) slice(total) else null
+
+        private fun slice(end: Int = lastSpeech + SAMPLE_RATE / 4): FloatArray {
             val all = FloatArray(total)
             var offset = 0
             audio.forEach {
@@ -764,7 +798,7 @@ class VoiceLoop(
             }
             // Detection lags behind the real start of speech, so earlier audio is kept too.
             val from = (speechStart - SAMPLE_RATE / 2).coerceAtLeast(0)
-            val to = (lastSpeech + SAMPLE_RATE / 4).coerceAtMost(total)
+            val to = end.coerceAtMost(total)
             return all.copyOfRange(from, to)
         }
 

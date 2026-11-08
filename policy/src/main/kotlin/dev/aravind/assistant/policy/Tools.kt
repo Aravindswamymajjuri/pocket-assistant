@@ -68,6 +68,10 @@ enum class Tool(
         mapOf("to" to TextParam(60), "body" to TextParam(480)), "Send a WhatsApp message",
     ),
     PLACE_CALL("place_call", Risk.L0_SAFE, Category.CALLS, mapOf("to" to TextParam(60)), "Place a phone call"),
+    WEB_ANSWER(
+        "web_answer", Risk.L0_SAFE, Category.WEB, mapOf("query" to TextParam(200)),
+        "Look up something current on Google, like match results, news, weather, or prices, and say the answer",
+    ),
     OPEN_CHAT(
         "open_chat", Risk.L0_SAFE, Category.MESSAGES,
         mapOf("contact" to TextParam(60), "app" to ChoiceParam(setOf("whatsapp", "sms"), required = false)),
