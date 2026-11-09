@@ -497,11 +497,38 @@ object WakeName {
             WakeSensitivity.NORMAL -> listOf("HEY", "HI", "HELLO", "OK")
             WakeSensitivity.LOW -> listOf("HEY")
         }
-        val phrases = greetings.map { "$it $upper" }.toMutableList()
-        // The name on its own is left to the slower Moonshine check. In testing it competed with "hey" plus the name.
+        val phrases = greetings.flatMap { greeting -> spellings(upper).map { "$greeting $it" } }
+        // The name on its own isn't added. In testing it competed with "hey" plus the name.
         val lines = phrases.mapNotNull { line(tokenizer, it, sensitivity.boost, sensitivity.threshold) }
         return lines.takeIf { it.isNotEmpty() }?.joinToString("/")
     }
+
+    /**
+     * Other spellings of the name that sound the same. The wake detector matches spelling pieces, so "JUNNU" expects
+     * two N sounds, but people say "ju-nu". Names ending in "u", like Junnu, Chintu or Raju, also get "oo" spellings.
+     * In testing, "hey Junnu" woke 0 of 40 times with only its own spelling and 22 of 40 with these, with no extra false wakes.
+     */
+    fun spellings(upperName: String): List<String> {
+        val words = upperName.split(' ').filter { it.isNotEmpty() }
+        if (words.isEmpty()) return emptyList()
+        val last = words.last()
+        val single = last.replace(Regex("([A-Z])\\1+"), "$1")
+        val forms = linkedSetOf(last, single)
+        if (single.endsWith("U") && single.length >= 3) {
+            val endOo = single.dropLast(1) + "OO"
+            val firstU = single.indexOf('U')
+            forms += endOo
+            if (firstU in 1 until single.length - 1) {
+                val firstOo = single.substring(0, firstU) + "OO" + single.substring(firstU + 1)
+                forms += firstOo
+                forms += firstOo.dropLast(1) + "OO"
+            }
+        }
+        val prefix = words.dropLast(1).joinToString(" ")
+        return forms.take(MAX_SPELLINGS).map { if (prefix.isEmpty()) it else "$prefix $it" }
+    }
+
+    private const val MAX_SPELLINGS = 5
 }
 
 enum class WakeSensitivity(val boost: Float, val threshold: Float) {

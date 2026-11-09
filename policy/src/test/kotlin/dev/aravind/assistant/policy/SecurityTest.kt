@@ -514,4 +514,13 @@ class SecurityTest {
         assertNull(WakeName.heardInStrict("the weather is nice", "Nova"))
         assertNull(WakeName.heardInStrict("", "Nova"))
     }
+
+    @Test fun wakeNamesGetSoundAlikeSpellings() {
+        assertEquals(listOf("JUNNU", "JUNU", "JUNOO", "JOONU", "JOONOO"), WakeName.spellings("JUNNU"))
+        assertEquals(listOf("NOVA"), WakeName.spellings("NOVA"))
+        assertEquals(listOf("BUDDY", "BUDY"), WakeName.spellings("BUDDY"))
+        assertEquals(listOf("RAJU", "RAJOO"), WakeName.spellings("RAJU"))
+        assertEquals(listOf("CHINTU", "CHINTOO"), WakeName.spellings("CHINTU"))
+        assertEquals(listOf("SITA RAM"), WakeName.spellings("SITA RAM"))
+    }
 }
