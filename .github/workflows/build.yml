@@ -24,6 +24,8 @@ jobs:
         with:
           path: ${{ runner.temp }}/voice-models
           key: voice-models-${{ hashFiles('scripts/fetch_models.sh') }}
+          # Reuses files from earlier builds if a download server is down. Every file is still checked against its pinned hash.
+          restore-keys: voice-models-
       - name: Download offline voice models
         run: bash scripts/fetch_models.sh
       - uses: gradle/actions/setup-gradle@v4

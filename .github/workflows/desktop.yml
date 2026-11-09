@@ -19,6 +19,8 @@ jobs:
         with:
           path: ${{ runner.temp }}/voice-models
           key: voice-models-${{ hashFiles('scripts/fetch_models.sh') }}
+          # Reuses files from earlier builds if a download server is down. Every file is still checked against its pinned hash.
+          restore-keys: voice-models-
       - name: Download voice models
         run: bash scripts/fetch_models.sh
       - name: Download Windows speech library

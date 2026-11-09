@@ -20,7 +20,8 @@ mkdir -p "$OUT"/moonshine "$OUT"/kws "$OUT"/vad "$OUT"/piper "$OUT"/speaker "$DE
 get() {
   local url=$1 name
   name=$(basename "$url")
-  [ -f "$WORK/$name" ] || curl -fsSL --retry 3 -o "$WORK/$name" "$url"
+  # GitHub's download server sometimes times out for a few minutes, so retries wait and keep trying.
+  [ -f "$WORK/$name" ] || curl -fsSL --retry 10 --retry-delay 15 --retry-all-errors -o "$WORK/$name" "$url"
 }
 
 get "$BASE/v$SHERPA_VERSION/sherpa-onnx-$SHERPA_VERSION.aar"
