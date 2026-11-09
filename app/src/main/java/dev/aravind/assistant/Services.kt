@@ -161,8 +161,6 @@ class AssistantService : Service() {
         return withContext(Dispatchers.Default) { active.understand(samples) }
     }
 
-    @Volatile
-    private var lastTest: FloatArray? = null
 
     /** Records one phrase, then shows what each engine heard and how long it took. */
     fun speechTest(report: (String) -> Unit) {
@@ -175,7 +173,7 @@ class AssistantService : Service() {
                 report("I didn't hear any speech. Check the microphone permission, and speak a little closer")
                 return@launch
             }
-            lastTest = samples
+            AssistantRuntime.lastAudio = samples
             report("Recognizing...")
             val text = withContext(Dispatchers.Default) {
                 val peak = samples.maxOf { kotlin.math.abs(it) }
@@ -198,7 +196,7 @@ class AssistantService : Service() {
     }
 
     fun playLastTest(): Boolean {
-        val samples = lastTest ?: return false
+        val samples = AssistantRuntime.lastAudio ?: return false
         scope.launch(Dispatchers.Default) { Audio.play(samples, 16_000) }
         return true
     }

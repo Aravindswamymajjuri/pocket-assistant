@@ -505,7 +505,12 @@ class SecurityTest {
         assertEquals("call daddy", WakeName.heardInStrict("Hey Nowa, call Daddy", "Nova"))
         assertEquals("", WakeName.heardInStrict("Nova", "Nova"))
         assertNull(WakeName.heardInStrict("Noah", "Nova"))
-        assertNull(WakeName.heardInStrict("a nova", "Nova"))
+        assertEquals("", WakeName.heardInStrict("a nova", "Nova"))
+        assertEquals("", WakeName.heardInStrict("He arriving", "Aravind"))
+        assertEquals("", WakeName.heardInStrict("Hey, Ara vind.", "Aravind"))
+        assertEquals("open whatsapp", WakeName.heardInStrict("Hi Aravind open WhatsApp", "Aravind"))
+        assertNull(WakeName.heardInStrict("I arrived home", "Aravind"))
+        assertNull(WakeName.heardInStrict("Hello everyone", "Nova"))
         assertNull(WakeName.heardInStrict("the weather is nice", "Nova"))
         assertNull(WakeName.heardInStrict("", "Nova"))
     }

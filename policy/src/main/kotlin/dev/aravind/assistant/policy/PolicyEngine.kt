@@ -428,8 +428,10 @@ object WakeName {
     }
 
     /**
-     * The check used to wake the assistant from silence. It needs a greeting and the name,
-     * like "hey nova", or the name said exactly, so random sounds and words don't wake it.
+     * The check used to wake the assistant from silence, on what Moonshine heard.
+     * It accepts a short first word and then the name, like "hey nova" or "a nova",
+     * or the name on its own spelled almost exactly. For longer names, a greeting plus a
+     * name that sounds the same also counts, so "he arriving" wakes "Aravind".
      * Returns the words spoken after the name, or null.
      */
     fun heardInStrict(text: String, name: String): String? {
@@ -438,15 +440,28 @@ object WakeName {
         if (parts.isEmpty() || spoken.size < parts.size) return null
         val target = parts.joinToString("")
         val allowed = if (target.length <= 5) 1 else 2
-        if (spoken.size > parts.size && spoken[0] in WAKE_GREETINGS) {
-            val candidate = spoken.subList(1, 1 + parts.size).joinToString("")
-            if (ContactMatcher.distance(candidate, target) <= allowed) return spoken.drop(1 + parts.size).joinToString(" ")
+        val targetKey = FuzzyCommand.key(target)
+        for (start in 0..1) {
+            if (spoken.size < start + parts.size) break
+            if (start == 1 && spoken[0].length > 5) continue
+            val limit = if (start == 1) allowed else allowed - 1
+            // The recognizer sometimes splits a name in two, like "ara vind", so one extra word is tried too.
+            for (extra in 0..1) {
+                val end = start + parts.size + extra
+                if (end > spoken.size) continue
+                val candidate = spoken.subList(start, end).joinToString("")
+                if (ContactMatcher.distance(candidate, target) <= limit) return spoken.drop(end).joinToString(" ")
+                if (start == 1 && extra == 0 && spoken[0] in WAKE_GREETINGS && target.length >= 6 && targetKey.length >= 3 &&
+                    ContactMatcher.distance(FuzzyCommand.key(candidate), targetKey) <= 1
+                ) {
+                    return spoken.drop(end).joinToString(" ")
+                }
+            }
         }
-        if (spoken.subList(0, parts.size).joinToString("") == target) return spoken.drop(parts.size).joinToString(" ")
         return null
     }
 
-    private val WAKE_GREETINGS = setOf("hey", "hi", "hello", "ok", "okay", "hay")
+    private val WAKE_GREETINGS = setOf("hey", "hi", "hello", "ok", "okay", "hay", "he", "a", "ay", "high", "hai", "hei")
 
     private val allowed = Regex("^[A-Za-z]+( [A-Za-z]+)?$")
 
@@ -490,9 +505,11 @@ object WakeName {
 }
 
 enum class WakeSensitivity(val boost: Float, val threshold: Float) {
-    LOW(2.0f, 0.25f),
-    NORMAL(3.0f, 0.15f),
-    HIGH(3.5f, 0.1f),
+    // Tuned on quiet, noisy test speech with Indian English voices. The speech and noise checks in the
+    // phone app stop false wakes, so the detector itself can be more sensitive than before.
+    LOW(2.5f, 0.2f),
+    NORMAL(3.5f, 0.1f),
+    HIGH(4.0f, 0.06f),
 }
 
 

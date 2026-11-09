@@ -54,13 +54,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private const val SAMPLE_RATE = 16_000
 private const val MIN_WAKE_SAMPLES = SAMPLE_RATE * 2 / 5
-private const val MAX_WAKE_SAMPLES = SAMPLE_RATE * 5 / 2
+private const val MAX_WAKE_SAMPLES = SAMPLE_RATE * 4
 
 // A wake word only counts if real speech was heard in the last 1.5 seconds (15 frames of 0.1 s).
 private const val WAKE_SPEECH_FRAMES = 15
 
-// Speech must be about twice as loud as the room's background noise to wake the assistant.
-private const val WAKE_OVER_NOISE = 2.0f
+// Speech must be a little louder than the room's background noise to wake the assistant.
+private const val WAKE_OVER_NOISE = 1.3f
 private const val WAKE_MIN_LEVEL = 0.003f
 
 // The detector flips quickly. The pause you must leave before a phrase ends is set separately below.
@@ -451,7 +451,9 @@ class VoiceLoop(
         val minimum = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val created = AudioRecord(
             MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT, maxOf(minimum, SAMPLE_RATE),
+            AudioFormat.ENCODING_PCM_16BIT,
+            // Room for 4 seconds of audio, so nothing is lost while the phone is busy recognizing speech.
+            maxOf(minimum, SAMPLE_RATE * 2 * 4),
         )
         if (created.state != AudioRecord.STATE_INITIALIZED) {
             created.release()
@@ -534,7 +536,8 @@ class VoiceLoop(
                     var samples = active.feed(frame)
                     // While you speak, the words so far are shown about once a second.
                     if (samples == null && captureRequest == null) {
-                        partialFrames++
+                        // Waits 0.8 s after each update, so live text never slows down the microphone.
+                        if (!partialBusy) partialFrames++
                         if (partialFrames >= 8 && !partialBusy) {
                             active.snapshot()?.let { snap ->
                                 partialFrames = 0
@@ -588,7 +591,12 @@ class VoiceLoop(
                             break
                         }
                     }
-                    if (spotted && frameIndex - lastSpeechFrame <= WAKE_SPEECH_FRAMES && isOwnerVoice(recentAudio(WAKE_SPEECH_FRAMES))) {
+                    if (spotted && frameIndex - lastSpeechFrame > WAKE_SPEECH_FRAMES) {
+                        AssistantRuntime.wakeInfo.value = "Ignored a wake word with no clear voice (noise)"
+                    } else if (spotted && !isOwnerVoice(recentAudio(WAKE_SPEECH_FRAMES))) {
+                        AssistantRuntime.wakeInfo.value = "Ignored a wake word: not your saved voice"
+                    } else if (spotted) {
+                        AssistantRuntime.wakeInfo.value = "Woke up: fast detector"
                         wakeUp()
                         listenRequested.set(true)
                         check.restart()
@@ -665,9 +673,16 @@ class VoiceLoop(
             try {
                 val name = Features.wakeName(context)
                 val text = engines.moonshineOnly(samples)
-                // Stricter than the command check: a greeting and the name, or the name said exactly.
-                val rest = WakeName.heardInStrict(text, name) ?: return@launch
-                if (!isOwnerVoice(samples)) return@launch
+                val rest = WakeName.heardInStrict(text, name)
+                if (rest == null) {
+                    if (text.isNotBlank()) AssistantRuntime.wakeInfo.value = "Heard \"$text\", no wake word"
+                    return@launch
+                }
+                if (!isOwnerVoice(samples)) {
+                    AssistantRuntime.wakeInfo.value = "Heard \"$text\", but not your saved voice"
+                    return@launch
+                }
+                AssistantRuntime.wakeInfo.value = "Woke up: heard \"$text\""
                 wakeUp()
                 if (rest.contains(' ')) {
                     busy = true
@@ -710,6 +725,7 @@ class VoiceLoop(
             AssistantRuntime.status.value = "Ready"
             return
         }
+        AssistantRuntime.lastAudio = samples
         busy = true
         AssistantRuntime.status.value = "Working"
         scope.launch(Dispatchers.Default) {

@@ -580,11 +580,16 @@ private fun HomeScreen(activity: FragmentActivity) {
                 },
             ) { Text("Speech test") }
             OutlinedButton(
-                onClick = { if (AssistantService.instance?.playLastTest() != true) message = "Run the speech test first" },
-            ) { Text("Play recording") }
+                onClick = { if (AssistantService.instance?.playLastTest() != true) message = "Nothing recorded yet. Give a command or run the speech test first" },
+            ) { Text("Play last recording") }
         }
         val sensitivity = remember(refreshKey) { Features.wakeSensitivity(activity) }
+        val wakeInfo by AssistantRuntime.wakeInfo.collectAsState()
         Text("Wake sensitivity", style = MaterialTheme.typography.bodyLarge)
+        Text(
+            if (wakeInfo.isBlank()) "Last wake check: nothing yet. Say the wake word to test it" else "Last wake check: $wakeInfo",
+            style = MaterialTheme.typography.bodySmall,
+        )
         Text("Higher wakes more easily, but may also wake by mistake", style = MaterialTheme.typography.bodySmall)
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf(WakeSensitivity.LOW to "Low", WakeSensitivity.NORMAL to "Normal", WakeSensitivity.HIGH to "High").forEach { (level, label) ->

@@ -37,6 +37,13 @@ object AssistantRuntime {
     /** Words recognized so far while you're still speaking. */
     val partial = MutableStateFlow("")
 
+    /** What the wake word check last heard and decided, shown in Settings to help with tuning. */
+    val wakeInfo = MutableStateFlow("")
+
+    /** The last thing you said, kept only in memory so you can play it back and check the microphone. */
+    @Volatile
+    var lastAudio: FloatArray? = null
+
     /** Which speech engine produced the last transcript, shown on the listening card. */
     val lastEngine = MutableStateFlow("")
     val transcript = MutableStateFlow<List<String>>(emptyList())
@@ -85,6 +92,7 @@ object AssistantRuntime {
 
     /** Stopping must always work, so it needs no authentication and no voice check. */
     fun stopAll(context: Context, reason: String) {
+        lastAudio = null
         armed.value = false
         status.value = "Off"
         authority?.revokeAll()
