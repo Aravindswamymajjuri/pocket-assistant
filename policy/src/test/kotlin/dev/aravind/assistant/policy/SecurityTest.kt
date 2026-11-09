@@ -403,7 +403,7 @@ class SecurityTest {
         )
         val high = WakeName.keywords(tokenizer, "Nova", WakeSensitivity.HIGH)!!.split("/")
         assertEquals(5, high.size)
-        assertTrue(high.all { it.contains(":3.5 #0.1") })
+        assertTrue(high.all { it.contains(":4.0 #0.06") })
         assertTrue(high.any { it.endsWith("@HI_NOVA") })
         assertEquals(1, WakeName.keywords(tokenizer, "Nova", WakeSensitivity.LOW)!!.split("/").size)
         assertFalse(WakeName.keywords(tokenizer, "Mitra", WakeSensitivity.HIGH)!!.split("/").any { it.endsWith("@MITRA") })
