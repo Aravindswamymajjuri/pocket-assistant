@@ -37,6 +37,9 @@ object AssistantRuntime {
     /** Words recognized so far while you're still speaking. */
     val partial = MutableStateFlow("")
 
+    /** The microphone's format, and whether any audio was lost, shown in Settings. */
+    val micInfo = MutableStateFlow("")
+
     /** What the wake word check last heard and decided, shown in Settings to help with tuning. */
     val wakeInfo = MutableStateFlow("")
 
@@ -134,6 +137,10 @@ object Features {
     /** Whisper was removed, so an old Whisper choice becomes Auto. */
     fun speechEngine(context: Context): String =
         prefs(context).getString("engine", null)?.takeIf { it in setOf(SpeechEngine.GOOGLE, SpeechEngine.MOONSHINE) } ?: SpeechEngine.AUTO
+
+    /** Raises quiet recordings to a steady volume before recognition. The saved original is never changed. */
+    fun normalizeVolume(context: Context) = prefs(context).getBoolean("normalize", true)
+    fun setNormalizeVolume(context: Context, value: Boolean) = prefs(context).edit().putBoolean("normalize", value).apply()
 
     fun wakeOnlyMyVoice(context: Context) = prefs(context).getBoolean("wake_my_voice", false)
     fun setWakeOnlyMyVoice(context: Context, value: Boolean) = prefs(context).edit().putBoolean("wake_my_voice", value).apply()

@@ -26,7 +26,7 @@ get() {
 get "$BASE/v$SHERPA_VERSION/sherpa-onnx-$SHERPA_VERSION.aar"
 get "$BASE/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
 get "$BASE/asr-models/silero_vad.onnx"
-get "$BASE/asr-models/sherpa-onnx-moonshine-base-en-int8.tar.bz2"
+get "$BASE/asr-models/sherpa-onnx-moonshine-base-en-quantized-2026-02-27.tar.bz2"
 get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin"
 get "$BASE/tts-models/vits-piper-en_US-lessac-medium.tar.bz2"
 get "$BASE/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
@@ -74,9 +74,10 @@ PY
 
 cp "$WORK/silero_vad.onnx" "$OUT/vad/silero_vad.onnx"
 
-tar -xjf "$WORK/sherpa-onnx-moonshine-base-en-int8.tar.bz2" -C "$WORK"
-M="$WORK/sherpa-onnx-moonshine-base-en-int8"
-cp "$M/preprocess.onnx" "$M/encode.int8.onnx" "$M/uncached_decode.int8.onnx" "$M/cached_decode.int8.onnx" "$M/tokens.txt" "$OUT/moonshine/"
+# Moonshine v2 Base (2026-02-27): more accurate and half the size of v1 Base.
+tar -xjf "$WORK/sherpa-onnx-moonshine-base-en-quantized-2026-02-27.tar.bz2" -C "$WORK"
+M="$WORK/sherpa-onnx-moonshine-base-en-quantized-2026-02-27"
+cp "$M/encoder_model.ort" "$M/decoder_model_merged.ort" "$M/tokens.txt" "$OUT/moonshine/"
 
 cp "$WORK/ggml-base.en-q5_1.bin" "$DESKTOP_OUT/whisper/ggml-base.en-q5_1.bin"
 

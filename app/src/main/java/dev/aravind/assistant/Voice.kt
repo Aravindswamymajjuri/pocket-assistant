@@ -2,8 +2,10 @@ package dev.aravind.assistant
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.ContentValues
 import android.content.Intent
 import android.os.Bundle
+import android.provider.MediaStore
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -11,6 +13,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioTimestamp
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.ToneGenerator
@@ -50,6 +53,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val SAMPLE_RATE = 16_000
@@ -70,7 +74,7 @@ private const val WAKE_PAUSE_MS = 300
 
 /** Voice models ship in the APK and are unpacked to private storage on first use. */
 object VoiceAssets {
-    private const val VERSION = "7"
+    private const val VERSION = "8"
 
     fun dir(context: Context) = File(context.noBackupFilesDir, "voice")
 
@@ -97,6 +101,7 @@ object VoiceAssets {
 
 /** Offline engines, loaded only when needed and released when the assistant stops. */
 class VoiceEngines(context: Context) {
+    private val appContext = context.applicationContext
     private val root = VoiceAssets.dir(context).absolutePath
 
     val spotter by lazy {
@@ -166,11 +171,10 @@ class VoiceEngines(context: Context) {
             config = OfflineRecognizerConfig(
                 featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
                 modelConfig = OfflineModelConfig(
+                    // Moonshine v2 Base (February 2026): an encoder and one merged decoder.
                     moonshine = OfflineMoonshineModelConfig(
-                        preprocessor = "$root/moonshine/preprocess.onnx",
-                        encoder = "$root/moonshine/encode.int8.onnx",
-                        uncachedDecoder = "$root/moonshine/uncached_decode.int8.onnx",
-                        cachedDecoder = "$root/moonshine/cached_decode.int8.onnx",
+                        encoder = "$root/moonshine/encoder_model.ort",
+                        mergedDecoder = "$root/moonshine/decoder_model_merged.ort",
                     ),
                     tokens = "$root/moonshine/tokens.txt",
                     numThreads = 4,
@@ -192,13 +196,17 @@ class VoiceEngines(context: Context) {
         }
     }
 
-    /** For the speech test: each engine on its own, with no fallback. */
-    fun moonshineOnly(samples: FloatArray): String = moonshineText(Audio.normalized(samples))
+    /** Recognizes the audio as recorded, or with its volume raised first. The original audio is never changed. */
+    fun recognize(samples: FloatArray, normalize: Boolean): String =
+        moonshineText(if (normalize) Audio.normalized(samples) else samples)
+
+    /** Uses the "Raise quiet audio" setting. */
+    fun moonshineOnly(samples: FloatArray): String = recognize(samples, Features.normalizeVolume(appContext))
 
     /** Turns speech into text with Moonshine, on the phone. */
     fun transcribe(samples: FloatArray): String {
         AssistantRuntime.lastEngine.value = "Moonshine"
-        return moonshineText(Audio.normalized(samples))
+        return moonshineOnly(samples)
     }
 
     fun embedding(samples: FloatArray): FloatArray? {
@@ -250,8 +258,57 @@ object Audio {
         }
     }
 
+    /**
+     * A standard WAV file: 16-bit PCM, mono, little-endian, with a 44-byte header.
+     * The app records 16-bit samples and stores them as sample / 32768, so this gives back the exact recorded values.
+     */
+    fun wav(samples: FloatArray, rate: Int): ByteArray {
+        val dataBytes = samples.size * 2
+        val out = ByteBuffer.allocate(44 + dataBytes).order(ByteOrder.LITTLE_ENDIAN)
+        out.put("RIFF".toByteArray(Charsets.US_ASCII)).putInt(36 + dataBytes).put("WAVE".toByteArray(Charsets.US_ASCII))
+        out.put("fmt ".toByteArray(Charsets.US_ASCII)).putInt(16).putShort(1).putShort(1)
+            .putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
+        out.put("data".toByteArray(Charsets.US_ASCII)).putInt(dataBytes)
+        for (s in samples) out.putShort(kotlin.math.round(s * 32768f).toInt().coerceIn(-32768, 32767).toShort())
+        return out.array()
+    }
+
     fun rms(frame: FloatArray): Float =
         if (frame.isEmpty()) 0f else kotlin.math.sqrt(frame.fold(0f) { sum, s -> sum + s * s } / frame.size)
+}
+
+/** Saves recordings to Downloads/PocketAssistant. No storage permission is needed for this on Android 10 and newer. */
+object Recordings {
+    /** Returns the saved file names. Throws with a readable message if saving fails. */
+    fun saveLast(context: Context): List<String> {
+        val original = AssistantRuntime.lastAudio ?: error("Nothing recorded yet. Give a command or run the speech test first")
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+        val saved = mutableListOf(save(context, "voice-$stamp-original.wav", Audio.wav(original, 16_000)))
+        // A second copy with the volume raised, so both can be compared.
+        if (Features.normalizeVolume(context)) {
+            saved += save(context, "voice-$stamp-volume-raised.wav", Audio.wav(Audio.normalized(original), 16_000))
+        }
+        return saved
+    }
+
+    private fun save(context: Context, name: String, bytes: ByteArray): String {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/PocketAssistant")
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val resolver = context.contentResolver
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("Couldn't create the file")
+        try {
+            resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: error("Couldn't open the file")
+            resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+        } catch (e: Exception) {
+            resolver.delete(uri, null, null)
+            throw e
+        }
+        return name
+    }
 }
 
 object SpeechEngine {
@@ -420,6 +477,12 @@ class VoiceLoop(
     private var noiseFloor = 0.01f
     private var lastSpeechFrame = -1000L
 
+    // Microphone checks: samples read since recording started, samples Android dropped, and the buffer size.
+    private var samplesRead = 0L
+    private var samplesLost = 0L
+    private var bufferFrames = 0
+    private val timestamp = AudioTimestamp()
+
     /** Applies a new wake name without restarting the assistant. */
     fun reloadWakeName() {
         wakeChanged = true
@@ -445,24 +508,80 @@ class VoiceLoop(
         return Heard(text, verified, samples)
     }
 
+    private fun micProblem(message: String) {
+        AssistantRuntime.micInfo.value = "Microphone problem: $message"
+        Audit.log(context, "mic_problem")
+    }
+
+    /**
+     * Opens the microphone and checks it really records 16,000 Hz, mono, 16-bit audio, the format
+     * the speech models need. Android converts the microphone to this rate itself, so no resampling is done here.
+     */
     @SuppressLint("MissingPermission")
     private fun open(): AudioRecord? {
         record?.let { return it }
         val minimum = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val created = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            // Room for 4 seconds of audio, so nothing is lost while the phone is busy recognizing speech.
-            maxOf(minimum, SAMPLE_RATE * 2 * 4),
-        )
-        if (created.state != AudioRecord.STATE_INITIALIZED) {
+        if (minimum <= 0) {
+            micProblem("this phone can't record 16 kHz mono 16-bit audio")
+            return null
+        }
+        val created = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                // Room for 4 seconds of audio, so nothing is lost while the phone is busy recognizing speech.
+                maxOf(minimum, SAMPLE_RATE * 2 * 4),
+            )
+        } catch (e: Exception) {
+            micProblem("it couldn't be opened (${e.javaClass.simpleName})")
+            return null
+        }
+        val wrongFormat = when {
+            created.state != AudioRecord.STATE_INITIALIZED -> "it couldn't start. Another app may be using it"
+            created.sampleRate != SAMPLE_RATE -> "it records at ${created.sampleRate} Hz instead of 16,000 Hz"
+            created.channelCount != 1 -> "it records ${created.channelCount} channels instead of 1"
+            created.audioFormat != AudioFormat.ENCODING_PCM_16BIT -> "it doesn't record 16-bit audio"
+            else -> null
+        }
+        if (wrongFormat != null) {
             created.release()
+            micProblem(wrongFormat)
             return null
         }
         // The voice recognition source is tuned for speech models. Extra phone filters can distort words, so none are added.
         created.startRecording()
+        if (created.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            created.release()
+            micProblem("recording didn't start. A call or another app may be using it")
+            return null
+        }
+        bufferFrames = created.bufferSizeInFrames
+        samplesRead = 0
+        samplesLost = 0
+        AssistantRuntime.micInfo.value = "Microphone: %,d Hz, mono, 16-bit, %.1f s buffer. No audio lost".format(
+            created.sampleRate, bufferFrames / SAMPLE_RATE.toFloat(),
+        )
         record = created
         return created
+    }
+
+    /**
+     * Android drops audio without saying so when the app reads too slowly. The microphone's own
+     * frame counter shows how much was recorded, so anything beyond what was read and still buffered was lost.
+     */
+    private fun checkForLostAudio(mic: AudioRecord) {
+        if (mic.getTimestamp(timestamp, AudioTimestamp.TIMEBASE_MONOTONIC) != AudioRecord.SUCCESS) return
+        val lost = timestamp.framePosition - samplesRead - bufferFrames
+        if (lost > samplesLost + SAMPLE_RATE / 10) {
+            samplesLost = lost
+            AssistantRuntime.micInfo.value = "Microphone: %,d Hz, mono, 16-bit. Lost %.1f s of audio because the phone was busy".format(
+                mic.sampleRate, samplesLost / SAMPLE_RATE.toFloat(),
+            )
+            Audit.log(context, "mic_audio_lost")
+        }
+        if (mic.activeRecordingConfiguration?.isClientSilenced == true) {
+            AssistantRuntime.micInfo.value = "Microphone problem: another app is using the microphone, so the assistant hears silence"
+        }
     }
 
     private fun close() {
@@ -484,6 +603,9 @@ class VoiceLoop(
         var collector: Collector? = null
         var watcher: Collector? = null
         var wakeGain = 1.5f
+        // The speech detector for commands is loaded once, before recording, and reset for each command.
+        // Loading it while you speak used to pause the microphone.
+        val listenVad = engines.newVad(VAD_SILENCE)
         try {
             while (currentCoroutineContext().isActive) {
                 val wantCapture = captureRequest != null
@@ -504,7 +626,15 @@ class VoiceLoop(
                     continue
                 }
                 val count = mic.read(shorts, 0, shorts.size)
-                if (count <= 0) continue
+                if (count < 0) {
+                    micProblem("reading failed (error $count). Restarting it")
+                    close()
+                    delay(500)
+                    continue
+                }
+                if (count == 0) continue
+                samplesRead += count
+                if (frameIndex % 10 == 0L) checkForLostAudio(mic)
                 if (speaking) continue
                 for (i in 0 until count) floats[i] = shorts[i] / 32768f
                 val frame = floats.copyOf(count)
@@ -525,7 +655,7 @@ class VoiceLoop(
                     prerollFrom = -1L
                     // After a wake word found by the name check, start from where the wake phrase ended.
                     val preroll = if (from >= 0) recent.filter { it.first > from && it.first < frameIndex }.map { it.second } else emptyList()
-                    collector = Collector(engines.newVad(VAD_SILENCE), END_PAUSE_MS, preroll)
+                    collector = Collector(listenVad, END_PAUSE_MS, preroll, ownsVad = false)
                     AssistantRuntime.partial.value = ""
                     partialFrames = 0
                     watcher?.restart()
@@ -613,6 +743,7 @@ class VoiceLoop(
         } finally {
             collector?.close()
             watcher?.close()
+            listenVad.release()
             wakeStream?.release()
             close()
         }
@@ -746,7 +877,12 @@ class VoiceLoop(
      * Collects one phrase. The speech detector only decides when you've finished. The audio itself is
      * kept whole, from just before your first word, so short pauses and first syllables aren't lost.
      */
-    private class Collector(private val vad: Vad, private val endPauseMs: Int, preroll: List<FloatArray> = emptyList()) {
+    private class Collector(
+        private val vad: Vad,
+        private val endPauseMs: Int,
+        preroll: List<FloatArray> = emptyList(),
+        private val ownsVad: Boolean = true,
+    ) {
         private var started = System.currentTimeMillis()
         private val pending = ArrayList<Float>()
         private val audio = ArrayList<FloatArray>()
@@ -760,6 +896,10 @@ class VoiceLoop(
             private set
 
         init {
+            if (!ownsVad) {
+                vad.clear()
+                vad.reset()
+            }
             preroll.forEach { add(it) }
         }
 
@@ -823,7 +963,15 @@ class VoiceLoop(
             vad.reset()
         }
 
-        fun close() = vad.release()
+        /** A shared speech detector is cleared and reset for the next command, not released. */
+        fun close() {
+            if (ownsVad) {
+                vad.release()
+            } else {
+                vad.clear()
+                vad.reset()
+            }
+        }
 
         private companion object {
             const val WINDOW = 512

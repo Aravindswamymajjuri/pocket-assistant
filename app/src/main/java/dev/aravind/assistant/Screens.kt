@@ -566,7 +566,7 @@ private fun HomeScreen(activity: FragmentActivity) {
         Text(
             when (engine) {
                 SpeechEngine.GOOGLE -> "Most accurate for Indian English. Without its offline pack, Google may use the internet"
-                SpeechEngine.MOONSHINE -> "Open-source and fast. English only"
+                SpeechEngine.MOONSHINE -> "Moonshine v2, open-source and fast. English only"
                 else -> "Uses Google on-device if available, otherwise Moonshine"
             },
             style = MaterialTheme.typography.bodySmall,
@@ -583,6 +583,21 @@ private fun HomeScreen(activity: FragmentActivity) {
                 onClick = { if (AssistantService.instance?.playLastTest() != true) message = "Nothing recorded yet. Give a command or run the speech test first" },
             ) { Text("Play last recording") }
         }
+        OutlinedButton(
+            onClick = {
+                val service = AssistantService.instance
+                if (service == null) message = "Turn on the assistant first"
+                else service.saveLastRecording { text -> activity.runOnUiThread { message = text } }
+            },
+            Modifier.fillMaxWidth(),
+        ) { Text("Save last recording") }
+        val normalizeOn = remember(refreshKey) { Features.normalizeVolume(activity) }
+        ToggleRow("Raise quiet audio", "Makes quiet recordings louder before recognition. Run the speech test to compare", normalizeOn) { on ->
+            Features.setNormalizeVolume(activity, on)
+            refresh++
+        }
+        val micInfo by AssistantRuntime.micInfo.collectAsState()
+        if (micInfo.isNotBlank()) Text(micInfo, style = MaterialTheme.typography.bodySmall)
         val sensitivity = remember(refreshKey) { Features.wakeSensitivity(activity) }
         val wakeInfo by AssistantRuntime.wakeInfo.collectAsState()
         Text("Wake sensitivity", style = MaterialTheme.typography.bodyLarge)

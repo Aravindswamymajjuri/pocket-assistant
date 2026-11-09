@@ -418,10 +418,9 @@ private fun selfTest(report: File): Int {
                     com.k2fsa.sherpa.onnx.OfflineModelConfig.builder()
                         .setMoonshine(
                             com.k2fsa.sherpa.onnx.OfflineMoonshineModelConfig.builder()
-                                .setPreprocessor("$root/moonshine/preprocess.onnx")
-                                .setEncoder("$root/moonshine/encode.int8.onnx")
-                                .setUncachedDecoder("$root/moonshine/uncached_decode.int8.onnx")
-                                .setCachedDecoder("$root/moonshine/cached_decode.int8.onnx")
+                                // Moonshine v2 Base, the same model files as the phone app.
+                                .setEncoder("$root/moonshine/encoder_model.ort")
+                                .setMergedDecoder("$root/moonshine/decoder_model_merged.ort")
                                 .build(),
                         )
                         .setTokens("$root/moonshine/tokens.txt")

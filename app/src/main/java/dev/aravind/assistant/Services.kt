@@ -178,20 +178,34 @@ class AssistantService : Service() {
             val text = withContext(Dispatchers.Default) {
                 val peak = samples.maxOf { kotlin.math.abs(it) }
                 val loudness = (Audio.rms(samples) * 1000).toInt()
-                val start = System.currentTimeMillis()
-                val moon = runCatching { voice.moonshineOnly(samples) }.getOrElse { "failed: ${it.javaClass.simpleName}" }
-                val moonMs = System.currentTimeMillis() - start
+                // The same recording, recognized as recorded and with its volume raised, so the two can be compared.
+                var start = System.currentTimeMillis()
+                val raised = runCatching { voice.recognize(samples, normalize = true) }.getOrElse { "failed: ${it.javaClass.simpleName}" }
+                val raisedMs = System.currentTimeMillis() - start
+                start = System.currentTimeMillis()
+                val original = runCatching { voice.recognize(samples, normalize = false) }.getOrElse { "failed: ${it.javaClass.simpleName}" }
+                val originalMs = System.currentTimeMillis() - start
+                val using = if (Features.normalizeVolume(this@AssistantService)) "volume raised" else "original volume"
                 val level = when {
                     peak < 0.05f -> "very quiet. Hold the phone 15 to 30 cm from your mouth"
                     peak < 0.20f -> "quiet. Hold the phone a little closer for better accuracy"
                     peak > 0.98f -> "too loud and distorted. Move a little away"
                     else -> "good"
                 }
-                "Recorded %.1f s. Volume: %s (peak %d%%, level %d)\nMoonshine, %d ms: %s".format(
-                    samples.size / 16000f, level, (peak * 100).toInt(), loudness, moonMs, moon,
+                ("Recorded %.1f s. Volume: %s (peak %d%%, level %d)\nMoonshine v2, volume raised, %d ms: %s\n" +
+                    "Moonshine v2, original volume, %d ms: %s\nCommands use: %s").format(
+                    samples.size / 16000f, level, (peak * 100).toInt(), loudness, raisedMs, raised, originalMs, original, using,
                 )
             }
             report(text)
+        }
+    }
+
+    /** Saves the last recording as a WAV file in Downloads/PocketAssistant. */
+    fun saveLastRecording(report: (String) -> Unit) {
+        scope.launch(Dispatchers.IO) {
+            val result = runCatching { Recordings.saveLast(this@AssistantService) }
+            report(result.fold({ "Saved to Downloads/PocketAssistant: ${it.joinToString(", ")}" }, { it.message ?: "Couldn't save it" }))
         }
     }
 
