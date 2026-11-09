@@ -545,32 +545,29 @@ private fun HomeScreen(activity: FragmentActivity) {
             },
             Modifier.fillMaxWidth(),
         ) { Text("Save name") }
-        val engine = remember(refreshKey) { Features.speechEngine(activity) }
         val googleOnDevice = remember(refreshKey) { GoogleStt.onDeviceAvailable(activity) }
-        Text("Speech recognition", style = MaterialTheme.typography.bodyLarge)
+        val googleAny = remember(refreshKey) { GoogleStt.anyAvailable(activity) }
+        Text("Speech recognition: Google", style = MaterialTheme.typography.bodyLarge)
         Text(
-            if (googleOnDevice) "Google on-device: available, works offline" else "Google on-device: not available on this phone",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf(SpeechEngine.AUTO to "Auto", SpeechEngine.GOOGLE to "Google", SpeechEngine.MOONSHINE to "Moonshine")
-                .forEach { (value, label) ->
-                    val onClick = {
-                        Features.setSpeechEngine(activity, value)
-                        refresh++
-                        Unit
-                    }
-                    if (value == engine) Button(onClick = onClick) { Text(label) } else OutlinedButton(onClick = onClick) { Text(label) }
-                }
-        }
-        Text(
-            when (engine) {
-                SpeechEngine.GOOGLE -> "Most accurate for Indian English. Without its offline pack, Google may use the internet"
-                SpeechEngine.MOONSHINE -> "Moonshine v2, open-source and fast. English only"
-                else -> "Uses Google on-device if available, otherwise Moonshine"
+            when {
+                googleOnDevice -> "Google's on-device recognizer is on this phone. It works fully offline once English is downloaded"
+                googleAny -> "This phone uses the regular Google recognizer. Download offline English so it works without internet"
+                else -> "Google speech isn't installed. Install Speech Services by Google from the Play Store"
             },
             style = MaterialTheme.typography.bodySmall,
         )
+        Button(
+            onClick = {
+                message = if (GoogleStt.openOfflineDownload(activity)) {
+                    "Download English (India) and English (US). If this isn't the right page: Settings > Google > " +
+                        "Settings for Google apps > Search, Assistant & Voice > Voice > Offline speech recognition"
+                } else {
+                    "Open Settings > Google > Settings for Google apps > Search, Assistant & Voice > Voice > " +
+                        "Offline speech recognition, and download English (India)"
+                }
+            },
+            Modifier.fillMaxWidth(),
+        ) { Text("Download offline speech") }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 onClick = {
@@ -580,8 +577,8 @@ private fun HomeScreen(activity: FragmentActivity) {
                 },
             ) { Text("Speech test") }
             OutlinedButton(
-                onClick = { if (AssistantService.instance?.playLastTest() != true) message = "Nothing recorded yet. Give a command or run the speech test first" },
-            ) { Text("Play last recording") }
+                onClick = { if (AssistantService.instance?.playLastTest() != true) message = "Nothing recorded yet. Say the wake word first" },
+            ) { Text("Play wake recording") }
         }
         OutlinedButton(
             onClick = {
@@ -590,12 +587,7 @@ private fun HomeScreen(activity: FragmentActivity) {
                 else service.saveLastRecording { text -> activity.runOnUiThread { message = text } }
             },
             Modifier.fillMaxWidth(),
-        ) { Text("Save last recording") }
-        val normalizeOn = remember(refreshKey) { Features.normalizeVolume(activity) }
-        ToggleRow("Raise quiet audio", "Makes quiet recordings louder before recognition. Run the speech test to compare", normalizeOn) { on ->
-            Features.setNormalizeVolume(activity, on)
-            refresh++
-        }
+        ) { Text("Save wake recording") }
         val micInfo by AssistantRuntime.micInfo.collectAsState()
         if (micInfo.isNotBlank()) Text(micInfo, style = MaterialTheme.typography.bodySmall)
         val sensitivity = remember(refreshKey) { Features.wakeSensitivity(activity) }

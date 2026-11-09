@@ -89,6 +89,7 @@ jobs:
           cp "$(find native-build -name whisperjni.dll | head -1)" dist/PocketAssistant/app/native/
           cp -r assets/app/src/main/assets/models dist/PocketAssistant/app/models
           cp -r assets/desktop-models/whisper dist/PocketAssistant/app/models/whisper
+          cp -r assets/desktop-models/moonshine dist/PocketAssistant/app/models/moonshine
           cp desktop/packaging/*.bat dist/
           du -sh dist
       - name: Run the real self-test on the packaged app

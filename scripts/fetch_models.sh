@@ -6,7 +6,7 @@ SHERPA_VERSION=1.13.8
 BASE=https://github.com/k2-fsa/sherpa-onnx/releases/download
 WORK="${RUNNER_TEMP:-/tmp}/voice-models"
 OUT=app/src/main/assets/models
-# Whisper is used only by the laptop app, so it's kept out of the phone app.
+# Whisper and Moonshine are used only by the laptop app, so they're kept out of the phone app.
 DESKTOP_OUT=desktop-models
 HASHES=scripts/models.sha256
 # Wake phrases must be upper case. Add one phrase per line to support more names.
@@ -15,7 +15,7 @@ WAKE_PHRASES=${WAKE_PHRASES:-"HEY ASSISTANT"}
 mkdir -p "$WORK" app/libs
 rm -rf "$OUT"
 rm -rf "$DESKTOP_OUT"
-mkdir -p "$OUT"/moonshine "$OUT"/kws "$OUT"/vad "$OUT"/piper "$OUT"/speaker "$DESKTOP_OUT"/whisper
+mkdir -p "$OUT"/kws "$OUT"/vad "$OUT"/piper "$OUT"/speaker "$DESKTOP_OUT"/whisper "$DESKTOP_OUT"/moonshine
 
 get() {
   local url=$1 name
@@ -75,10 +75,10 @@ PY
 
 cp "$WORK/silero_vad.onnx" "$OUT/vad/silero_vad.onnx"
 
-# Moonshine v2 Base (2026-02-27): more accurate and half the size of v1 Base.
+# Moonshine v2 Base is used only by the laptop app's self-test. The phone app uses Google speech recognition.
 tar -xjf "$WORK/sherpa-onnx-moonshine-base-en-quantized-2026-02-27.tar.bz2" -C "$WORK"
 M="$WORK/sherpa-onnx-moonshine-base-en-quantized-2026-02-27"
-cp "$M/encoder_model.ort" "$M/decoder_model_merged.ort" "$M/tokens.txt" "$OUT/moonshine/"
+cp "$M/encoder_model.ort" "$M/decoder_model_merged.ort" "$M/tokens.txt" "$DESKTOP_OUT/moonshine/"
 
 cp "$WORK/ggml-base.en-q5_1.bin" "$DESKTOP_OUT/whisper/ggml-base.en-q5_1.bin"
 

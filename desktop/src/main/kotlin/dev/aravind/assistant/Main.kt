@@ -418,7 +418,7 @@ private fun selfTest(report: File): Int {
                     com.k2fsa.sherpa.onnx.OfflineModelConfig.builder()
                         .setMoonshine(
                             com.k2fsa.sherpa.onnx.OfflineMoonshineModelConfig.builder()
-                                // Moonshine v2 Base, the same model files as the phone app.
+                                // Moonshine v2 Base, shipped only with the laptop app.
                                 .setEncoder("$root/moonshine/encoder_model.ort")
                                 .setMergedDecoder("$root/moonshine/decoder_model_merged.ort")
                                 .build(),

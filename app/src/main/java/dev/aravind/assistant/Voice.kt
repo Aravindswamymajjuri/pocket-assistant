@@ -3,9 +3,12 @@ package dev.aravind.assistant
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.ContentValues
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.os.Bundle
 import android.provider.MediaStore
+import android.provider.Settings
+import android.net.Uri
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -20,10 +23,6 @@ import android.media.ToneGenerator
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.KeywordSpotter
 import com.k2fsa.sherpa.onnx.KeywordSpotterConfig
-import com.k2fsa.sherpa.onnx.OfflineModelConfig
-import com.k2fsa.sherpa.onnx.OfflineMoonshineModelConfig
-import com.k2fsa.sherpa.onnx.OfflineRecognizer
-import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
@@ -57,8 +56,6 @@ import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val SAMPLE_RATE = 16_000
-private const val MIN_WAKE_SAMPLES = SAMPLE_RATE * 2 / 5
-private const val MAX_WAKE_SAMPLES = SAMPLE_RATE * 4
 
 // A wake word only counts if real speech was heard in the last 1.5 seconds (15 frames of 0.1 s).
 private const val WAKE_SPEECH_FRAMES = 15
@@ -74,7 +71,7 @@ private const val WAKE_PAUSE_MS = 300
 
 /** Voice models ship in the APK and are unpacked to private storage on first use. */
 object VoiceAssets {
-    private const val VERSION = "8"
+    private const val VERSION = "9"
 
     fun dir(context: Context) = File(context.noBackupFilesDir, "voice")
 
@@ -101,7 +98,6 @@ object VoiceAssets {
 
 /** Offline engines, loaded only when needed and released when the assistant stops. */
 class VoiceEngines(context: Context) {
-    private val appContext = context.applicationContext
     private val root = VoiceAssets.dir(context).absolutePath
 
     val spotter by lazy {
@@ -166,48 +162,6 @@ class VoiceEngines(context: Context) {
 
     private val english by lazy { piper("piper") }
 
-    private val moonshine by lazy {
-        OfflineRecognizer(
-            config = OfflineRecognizerConfig(
-                featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
-                modelConfig = OfflineModelConfig(
-                    // Moonshine v2 Base (February 2026): an encoder and one merged decoder.
-                    moonshine = OfflineMoonshineModelConfig(
-                        encoder = "$root/moonshine/encoder_model.ort",
-                        mergedDecoder = "$root/moonshine/decoder_model_merged.ort",
-                    ),
-                    tokens = "$root/moonshine/tokens.txt",
-                    numThreads = 4,
-                ),
-            ),
-        )
-    }
-
-    private val moonshineLock = Any()
-
-    private fun moonshineText(samples: FloatArray): String = synchronized(moonshineLock) {
-        val stream = moonshine.createStream()
-        try {
-            stream.acceptWaveform(samples, SAMPLE_RATE)
-            moonshine.decode(stream)
-            return moonshine.getResult(stream).text.trim()
-        } finally {
-            stream.release()
-        }
-    }
-
-    /** Recognizes the audio as recorded, or with its volume raised first. The original audio is never changed. */
-    fun recognize(samples: FloatArray, normalize: Boolean): String =
-        moonshineText(if (normalize) Audio.normalized(samples) else samples)
-
-    /** Uses the "Raise quiet audio" setting. */
-    fun moonshineOnly(samples: FloatArray): String = recognize(samples, Features.normalizeVolume(appContext))
-
-    /** Turns speech into text with Moonshine, on the phone. */
-    fun transcribe(samples: FloatArray): String {
-        AssistantRuntime.lastEngine.value = "Moonshine"
-        return moonshineOnly(samples)
-    }
 
     fun embedding(samples: FloatArray): FloatArray? {
         val stream: OnlineStream = extractor.createStream()
@@ -277,18 +231,17 @@ object Audio {
         if (frame.isEmpty()) 0f else kotlin.math.sqrt(frame.fold(0f) { sum, s -> sum + s * s } / frame.size)
 }
 
-/** Saves recordings to Downloads/PocketAssistant. No storage permission is needed for this on Android 10 and newer. */
+/**
+ * Saves the last wake word recording to Downloads/PocketAssistant. Commands are heard by Google,
+ * which doesn't share its audio with apps, so only the app's own wake word audio can be saved.
+ * No storage permission is needed for this on Android 10 and newer.
+ */
 object Recordings {
     /** Returns the saved file names. Throws with a readable message if saving fails. */
     fun saveLast(context: Context): List<String> {
-        val original = AssistantRuntime.lastAudio ?: error("Nothing recorded yet. Give a command or run the speech test first")
+        val original = AssistantRuntime.lastAudio ?: error("Nothing recorded yet. Say the wake word first")
         val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
-        val saved = mutableListOf(save(context, "voice-$stamp-original.wav", Audio.wav(original, 16_000)))
-        // A second copy with the volume raised, so both can be compared.
-        if (Features.normalizeVolume(context)) {
-            saved += save(context, "voice-$stamp-volume-raised.wav", Audio.wav(Audio.normalized(original), 16_000))
-        }
-        return saved
+        return listOf(save(context, "wake-$stamp.wav", Audio.wav(original, 16_000)))
     }
 
     private fun save(context: Context, name: String, bytes: ByteArray): String {
@@ -311,15 +264,10 @@ object Recordings {
     }
 }
 
-object SpeechEngine {
-    const val AUTO = "auto"
-    const val GOOGLE = "google"
-    const val MOONSHINE = "moonshine"
-}
-
 /**
- * Android's built-in recognizer. The on-device version never uses the internet.
- * The standard version prefers offline, but may go online if the offline pack is missing.
+ * Google speech recognition. The on-device recognizer never uses the internet. If this phone doesn't
+ * have it, the regular Google recognizer is asked to prefer its offline English pack.
+ * This app has no internet permission, so audio never leaves the phone through this app.
  */
 object GoogleStt {
     sealed interface Result {
@@ -328,30 +276,51 @@ object GoogleStt {
         data object Nothing : Result
     }
 
-    /** Set when Google fails for a reason that won't fix itself, so it isn't retried until restart. */
-    @Volatile
-    var brokenThisSession = false
-
     fun onDeviceAvailable(context: Context) = SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
 
     fun anyAvailable(context: Context) = onDeviceAvailable(context) || SpeechRecognizer.isRecognitionAvailable(context)
 
-    fun inUse(context: Context): Boolean {
-        if (brokenThisSession) return false
-        return when (Features.speechEngine(context)) {
-            SpeechEngine.GOOGLE -> anyAvailable(context)
-            SpeechEngine.AUTO -> onDeviceAvailable(context)
-            else -> false
+    /** Shown on the listening card and in the speech test. */
+    fun modeName(context: Context) = if (onDeviceAvailable(context)) "Google on-device (offline)" else "Google, offline pack preferred"
+
+    // Indian English first. If that offline pack isn't on the phone, US English is tried.
+    private val tags = listOf("en-IN", "en-US")
+
+    @Volatile
+    private var tagIndex = 0
+
+    private const val DOWNLOAD_HINT = "Download English in Settings > Speech recognition > Download offline speech"
+
+    private fun reason(error: Int): String = when (error) {
+        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "English offline speech isn't downloaded yet. $DOWNLOAD_HINT"
+        SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Google's offline speech doesn't support this English yet. $DOWNLOAD_HINT"
+        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT, SpeechRecognizer.ERROR_SERVER,
+        SpeechRecognizer.ERROR_SERVER_DISCONNECTED,
+        -> "Google tried to use the internet, so its offline English pack is probably missing. $DOWNLOAD_HINT"
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Google speech needs the microphone permission"
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Google speech is busy. Try again in a moment"
+        SpeechRecognizer.ERROR_AUDIO -> "The microphone couldn't be used. Another app may be using it"
+        SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "Too many requests in a row. Wait a few seconds"
+        else -> "Google speech failed (error $error)"
+    }
+
+    /** Listens once. Retries with US English if the Indian English offline pack is missing. */
+    suspend fun listen(context: Context, @Suppress("UNUSED_PARAMETER") language: String = "en"): Result {
+        val first = listenOnce(context, tags[tagIndex])
+        val missing = first is Result.Unavailable && first.reason.startsWith("English offline") ||
+            first is Result.Unavailable && first.reason.startsWith("Google's offline speech doesn't")
+        if (missing && tagIndex < tags.size - 1) {
+            tagIndex++
+            return listenOnce(context, tags[tagIndex])
         }
+        return first
     }
 
-    private fun tag(language: String) = when (language) {
-        else -> "en-IN"
-    }
-
-    suspend fun listen(context: Context, language: String): Result = withContext(Dispatchers.Main) {
-        val onDevice = onDeviceAvailable(context)
-        val recognizer = if (onDevice) {
+    private suspend fun listenOnce(context: Context, tag: String): Result = withContext(Dispatchers.Main) {
+        if (!anyAvailable(context)) {
+            return@withContext Result.Unavailable("Google speech isn't installed. Install or update Speech Services by Google from the Play Store")
+        }
+        val recognizer = if (onDeviceAvailable(context)) {
             SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
         } else {
             SpeechRecognizer.createSpeechRecognizer(context)
@@ -367,10 +336,7 @@ object GoogleStt {
                 done.complete(
                     when (error) {
                         SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> Result.Nothing
-                        else -> {
-                            brokenThisSession = true
-                            Result.Unavailable("error $error")
-                        }
+                        else -> Result.Unavailable(reason(error))
                     },
                 )
             }
@@ -390,7 +356,7 @@ object GoogleStt {
         })
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, tag(language))
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, tag)
             .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
@@ -399,11 +365,34 @@ object GoogleStt {
             recognizer.startListening(intent)
             withTimeoutOrNull(15_000) { done.await() } ?: Result.Nothing
         } catch (e: Exception) {
-            brokenThisSession = true
-            Result.Unavailable(e.javaClass.simpleName)
+            Result.Unavailable("Google speech couldn't start (${e.javaClass.simpleName})")
         } finally {
             recognizer.destroy()
         }
+    }
+
+    /**
+     * Opens Google's screen for downloading offline speech languages. Phones differ, so several screens are
+     * tried in order, ending with the phone's voice input settings. Returns false if none could be opened.
+     */
+    fun openOfflineDownload(context: Context): Boolean {
+        val attempts = listOf(
+            Intent().setClassName("com.google.android.googlequicksearchbox", "com.google.android.voicesearch.greco3.languagepack.InstallActivity"),
+            Intent("com.google.android.speech.embedded.MANAGE_LANGUAGES"),
+            Intent(Settings.ACTION_VOICE_INPUT_SETTINGS),
+            Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.tts")),
+        )
+        for (intent in attempts) {
+            try {
+                context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                return true
+            } catch (e: ActivityNotFoundException) {
+                continue
+            } catch (e: SecurityException) {
+                continue
+            }
+        }
+        return false
     }
 }
 
@@ -459,19 +448,14 @@ class VoiceLoop(
     @Volatile
     private var wakeChanged = false
 
+    // Set while Google listens for a confirmation or the speech test, so the app's microphone is released.
     @Volatile
-    private var checking = false
+    private var micPaused = false
 
     // Recent microphone audio, so speech said right after the wake word isn't lost.
     private val recent = ArrayDeque<Pair<Long, FloatArray>>()
     private var frameIndex = 0L
 
-    @Volatile
-    private var prerollFrom = -1L
-
-    @Volatile
-    private var partialBusy = false
-    private var partialFrames = 0
 
     // The room's background noise level, and the last moment real speech was heard.
     private var noiseFloor = 0.01f
@@ -488,6 +472,7 @@ class VoiceLoop(
         wakeChanged = true
     }
 
+    @Volatile
     private var record: AudioRecord? = null
 
     fun requestListen() = listenRequested.set(true)
@@ -501,11 +486,18 @@ class VoiceLoop(
         return result
     }
 
-    fun understand(samples: FloatArray): Heard {
-        val text = engines.transcribe(samples)
-        // Voice ID adds a delay, so it only runs once a voice has been saved.
-        val verified = VoiceId.isEnrolled(context) && VoiceId.matches(context, engines.embedding(samples))
-        return Heard(text, verified, samples)
+    /**
+     * Lets Google listen once, outside the wake word flow. The app's microphone is released first,
+     * because Android lets only one app record at a time.
+     */
+    suspend fun listenWithGoogleNow(): GoogleStt.Result {
+        micPaused = true
+        try {
+            withTimeoutOrNull(1_500) { while (record != null) delay(20) }
+            return GoogleStt.listen(context)
+        } finally {
+            micPaused = false
+        }
     }
 
     private fun micProblem(message: String) {
@@ -608,6 +600,11 @@ class VoiceLoop(
         val listenVad = engines.newVad(VAD_SILENCE)
         try {
             while (currentCoroutineContext().isActive) {
+                if (micPaused) {
+                    close()
+                    delay(30)
+                    continue
+                }
                 val wantCapture = captureRequest != null
                 val wantListen = listenRequested.get()
                 val wantWake = !busy && wakeAllowed()
@@ -642,47 +639,23 @@ class VoiceLoop(
                 recent.addLast(frameIndex to frame)
                 while (recent.size > 50) recent.removeFirst()
 
-                if (collector == null && wantListen && !wantCapture && GoogleStt.inUse(context)) {
+                // Commands are always heard by Google, which shows the words live as you speak.
+                if (collector == null && wantListen && !wantCapture) {
                     listenRequested.set(false)
                     busy = true
                     close()
                     scope.launch(Dispatchers.Default) { listenWithGoogle() }
                     continue
                 }
-                if (collector == null && (wantCapture || wantListen)) {
-                    listenRequested.set(false)
-                    val from = prerollFrom
-                    prerollFrom = -1L
-                    // After a wake word found by the name check, start from where the wake phrase ended.
-                    val preroll = if (from >= 0) recent.filter { it.first > from && it.first < frameIndex }.map { it.second } else emptyList()
-                    collector = Collector(listenVad, END_PAUSE_MS, preroll, ownsVad = false)
-                    AssistantRuntime.partial.value = ""
-                    partialFrames = 0
+                // The app's own recording is used for Voice ID, which needs the raw audio.
+                if (collector == null && wantCapture) {
+                    collector = Collector(listenVad, END_PAUSE_MS, ownsVad = false)
                     watcher?.restart()
                     AssistantRuntime.status.value = "Listening"
                 }
                 val active = collector
                 if (active != null) {
                     var samples = active.feed(frame)
-                    // While you speak, the words so far are shown about once a second.
-                    if (samples == null && captureRequest == null) {
-                        // Waits 0.8 s after each update, so live text never slows down the microphone.
-                        if (!partialBusy) partialFrames++
-                        if (partialFrames >= 8 && !partialBusy) {
-                            active.snapshot()?.let { snap ->
-                                partialFrames = 0
-                                partialBusy = true
-                                scope.launch(Dispatchers.Default) {
-                                    try {
-                                        val text = runCatching { engines.moonshineOnly(snap) }.getOrDefault("")
-                                        if (text.isNotBlank()) AssistantRuntime.partial.value = text
-                                    } finally {
-                                        partialBusy = false
-                                    }
-                                }
-                            }
-                        }
-                    }
                     if (samples == null && active.expired()) samples = active.partial() ?: FloatArray(0)
                     if (samples != null) {
                         active.close()
@@ -726,17 +699,13 @@ class VoiceLoop(
                     } else if (spotted && !isOwnerVoice(recentAudio(WAKE_SPEECH_FRAMES))) {
                         AssistantRuntime.wakeInfo.value = "Ignored a wake word: not your saved voice"
                     } else if (spotted) {
-                        AssistantRuntime.wakeInfo.value = "Woke up: fast detector"
+                        AssistantRuntime.wakeInfo.value = "Woke up"
+                        // Kept in memory so "Play last recording" and "Save last recording" can check the wake word audio.
+                        AssistantRuntime.lastAudio = recentAudio(30)
                         wakeUp()
                         listenRequested.set(true)
                         check.restart()
                         continue
-                    }
-                    // A second, slower check with Moonshine catches the name when the fast detector misses it.
-                    if (phrase != null && phrase.size in MIN_WAKE_SAMPLES..MAX_WAKE_SAMPLES && !checking &&
-                        frameIndex - lastSpeechFrame <= WAKE_SPEECH_FRAMES
-                    ) {
-                        checkForName(phrase, frameIndex)
                     }
                 }
             }
@@ -756,7 +725,7 @@ class VoiceLoop(
             AssistantRuntime.partial.value = ""
             when (val result = GoogleStt.listen(context, Features.language(context))) {
                 is GoogleStt.Result.Text -> {
-                    AssistantRuntime.lastEngine.value = if (GoogleStt.onDeviceAvailable(context)) "Google on-device" else "Google"
+                    AssistantRuntime.lastEngine.value = GoogleStt.modeName(context)
                     AssistantRuntime.status.value = "Working"
                     val name = Features.wakeName(context)
                     val rest = WakeName.heardIn(result.text, name)
@@ -764,8 +733,8 @@ class VoiceLoop(
                     if (rest != "" && command.isNotBlank()) onCommand(Heard(command, false, FloatArray(0)))
                 }
                 is GoogleStt.Result.Unavailable -> {
-                    AssistantRuntime.say("Google speech isn't available (${result.reason}), so I'm using Moonshine")
-                    listenRequested.set(true)
+                    AssistantRuntime.say(result.reason)
+                    Audit.log(context, "google_speech_unavailable")
                 }
                 GoogleStt.Result.Nothing -> Unit
             }
@@ -798,44 +767,6 @@ class VoiceLoop(
         return runCatching { VoiceId.matches(context, engines.embedding(samples)) }.getOrDefault(false)
     }
 
-    private fun checkForName(samples: FloatArray, endedAt: Long) {
-        checking = true
-        scope.launch(Dispatchers.Default) {
-            try {
-                val name = Features.wakeName(context)
-                val text = engines.moonshineOnly(samples)
-                val rest = WakeName.heardInStrict(text, name)
-                if (rest == null) {
-                    if (text.isNotBlank()) AssistantRuntime.wakeInfo.value = "Heard \"$text\", no wake word"
-                    return@launch
-                }
-                if (!isOwnerVoice(samples)) {
-                    AssistantRuntime.wakeInfo.value = "Heard \"$text\", but not your saved voice"
-                    return@launch
-                }
-                AssistantRuntime.wakeInfo.value = "Woke up: heard \"$text\""
-                wakeUp()
-                if (rest.contains(' ')) {
-                    busy = true
-                    try {
-                        val heard = understand(samples)
-                        onCommand(heard.copy(text = rest))
-                    } finally {
-                        busy = false
-                        if (AssistantRuntime.armed.value) AssistantRuntime.status.value = "Ready"
-                    }
-                } else {
-                    prerollFrom = endedAt
-                    listenRequested.set(true)
-                }
-            } catch (e: Exception) {
-                Audit.log(context, "wake_check_failed:${e.javaClass.simpleName}")
-            } finally {
-                checking = false
-            }
-        }
-    }
-
     /** Tells you the wake word was heard, without needing to look at the screen. */
     private fun beep() {
         runCatching {
@@ -852,25 +783,7 @@ class VoiceLoop(
             request.complete(samples)
             return
         }
-        if (samples == null) {
-            AssistantRuntime.status.value = "Ready"
-            return
-        }
-        AssistantRuntime.lastAudio = samples
-        busy = true
-        AssistantRuntime.status.value = "Working"
-        scope.launch(Dispatchers.Default) {
-            try {
-                val heard = understand(samples)
-                // "Hey Nova, call Daddy" and "call Daddy" should do the same thing.
-                val rest = WakeName.heardIn(heard.text, Features.wakeName(context))
-                val command = if (rest.isNullOrBlank()) heard else heard.copy(text = rest)
-                if (rest != "" && command.text.isNotBlank()) onCommand(command)
-            } finally {
-                busy = false
-                if (AssistantRuntime.armed.value) AssistantRuntime.status.value = "Ready"
-            }
-        }
+        if (AssistantRuntime.armed.value) AssistantRuntime.status.value = "Ready"
     }
 
     /**
@@ -936,8 +849,6 @@ class VoiceLoop(
 
         fun partial(): FloatArray? = if (speechStart >= 0) slice() else null
 
-        /** Everything from just before your first word up to now, for showing words as you speak. */
-        fun snapshot(): FloatArray? = if (speechStart >= 0) slice(total) else null
 
         private fun slice(end: Int = lastSpeech + SAMPLE_RATE / 4): FloatArray {
             val all = FloatArray(total)

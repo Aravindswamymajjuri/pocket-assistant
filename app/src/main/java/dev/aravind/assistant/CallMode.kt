@@ -9,7 +9,6 @@ import android.telecom.TelecomManager
 import android.telephony.TelephonyManager
 import dev.aravind.assistant.policy.SecretRedactor
 import kotlinx.coroutines.delay
-import kotlin.math.sqrt
 
 /** Only fires for numbers you allowed. Nothing happens unless AI call mode is on. */
 class IncomingCallReceiver : BroadcastReceiver() {
@@ -56,16 +55,13 @@ object CallMessages {
 class CallSession(
     private val context: Context,
     private val speak: suspend (String) -> Unit,
-    private val capture: suspend (Long) -> FloatArray?,
-    private val understand: (FloatArray) -> Heard,
+    // Google listens for the caller's words through the speakerphone.
+    private val listen: suspend () -> String?,
 ) {
     private val audio = context.getSystemService(AudioManager::class.java)
     private val telecom = context.getSystemService(TelecomManager::class.java)
 
     private fun inCall() = audio.mode == AudioManager.MODE_IN_CALL || audio.mode == AudioManager.MODE_IN_COMMUNICATION
-
-    private fun rms(samples: FloatArray): Float =
-        if (samples.isEmpty()) 0f else sqrt(samples.fold(0f) { sum, s -> sum + s * s } / samples.size)
 
     private fun useSpeaker() {
         audio.availableCommunicationDevices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
@@ -87,14 +83,11 @@ class CallSession(
         delay(500)
 
         val notes = ArrayList<String>()
-        var loudest = 0f
         try {
             speak("Hello, this is an AI assistant answering for the owner of this phone. Who is calling, and what's your message?")
             repeat(MAX_TURNS) {
                 if (!inCall() || !AssistantRuntime.isActive()) return@repeat
-                val samples = capture(CAPTURE_MILLIS) ?: return@repeat
-                loudest = maxOf(loudest, rms(samples))
-                val text = understand(samples).text
+                val text = listen().orEmpty()
                 if (text.isBlank()) return@repeat
                 notes += SecretRedactor.redact(text)
                 val reply = runCatching { GemmaEngine.replyToCaller(context, text) }
@@ -109,7 +102,7 @@ class CallSession(
             }
             audio.clearCommunicationDevice()
             // Shows whether this phone really let the app hear the caller.
-            Audit.log(context, "ai_call_finished:turns=${notes.size}:mic_rms=%.4f".format(loudest))
+            Audit.log(context, "ai_call_finished:turns=${notes.size}")
             val summary = if (notes.isEmpty()) "No words were heard" else notes.joinToString(" | ")
             CallMessages.add(context, "${number.takeLast(10)}: $summary")
             AssistantRuntime.say("AI call from ${number.takeLast(10)} finished. ${notes.size} replies heard.")
@@ -118,7 +111,6 @@ class CallSession(
 
     private companion object {
         const val RING_BEFORE_ANSWER_MILLIS = 12_000L
-        const val CAPTURE_MILLIS = 9_000L
         const val MAX_TURNS = 4
     }
 }

@@ -150,58 +150,38 @@ class AssistantService : Service() {
     /** Spoken codes are English digits, so they're always read in English. */
     private suspend fun hear(): Heard? {
         val active = loop ?: return null
-        if (GoogleStt.inUse(this)) {
-            when (val result = GoogleStt.listen(this, "en")) {
-                is GoogleStt.Result.Text -> return Heard(result.text, false, FloatArray(0))
-                GoogleStt.Result.Nothing -> return null
-                is GoogleStt.Result.Unavailable -> Unit
+        return when (val result = active.listenWithGoogleNow()) {
+            is GoogleStt.Result.Text -> Heard(result.text, false, FloatArray(0))
+            is GoogleStt.Result.Unavailable -> {
+                AssistantRuntime.say(result.reason)
+                null
             }
+            GoogleStt.Result.Nothing -> null
         }
-        val samples = active.capture(9_000) ?: return null
-        return withContext(Dispatchers.Default) { active.understand(samples) }
     }
 
 
-    /** Records one phrase, then shows what each engine heard and how long it took. */
+    /** Google listens once, then shows what it heard, how long it took, and which recognizer was used. */
     fun speechTest(report: (String) -> Unit) {
         val active = loop ?: return report("Turn on the assistant first")
-        val voice = engines ?: return report("The voice system is still starting")
         scope.launch {
             report("Speak now, for example: set an alarm for 7:15 pm today")
-            val samples = active.capture(15_000)
-            if (samples == null || samples.isEmpty()) {
-                report("I didn't hear any speech. Check the microphone permission, and speak a little closer")
-                return@launch
-            }
-            AssistantRuntime.lastAudio = samples
-            report("Recognizing...")
-            val text = withContext(Dispatchers.Default) {
-                val peak = samples.maxOf { kotlin.math.abs(it) }
-                val loudness = (Audio.rms(samples) * 1000).toInt()
-                // The same recording, recognized as recorded and with its volume raised, so the two can be compared.
-                var start = System.currentTimeMillis()
-                val raised = runCatching { voice.recognize(samples, normalize = true) }.getOrElse { "failed: ${it.javaClass.simpleName}" }
-                val raisedMs = System.currentTimeMillis() - start
-                start = System.currentTimeMillis()
-                val original = runCatching { voice.recognize(samples, normalize = false) }.getOrElse { "failed: ${it.javaClass.simpleName}" }
-                val originalMs = System.currentTimeMillis() - start
-                val using = if (Features.normalizeVolume(this@AssistantService)) "volume raised" else "original volume"
-                val level = when {
-                    peak < 0.05f -> "very quiet. Hold the phone 15 to 30 cm from your mouth"
-                    peak < 0.20f -> "quiet. Hold the phone a little closer for better accuracy"
-                    peak > 0.98f -> "too loud and distorted. Move a little away"
-                    else -> "good"
-                }
-                ("Recorded %.1f s. Volume: %s (peak %d%%, level %d)\nMoonshine v2, volume raised, %d ms: %s\n" +
-                    "Moonshine v2, original volume, %d ms: %s\nCommands use: %s").format(
-                    samples.size / 16000f, level, (peak * 100).toInt(), loudness, raisedMs, raised, originalMs, original, using,
-                )
-            }
-            report(text)
+            val start = System.currentTimeMillis()
+            val result = active.listenWithGoogleNow()
+            val ms = System.currentTimeMillis() - start
+            val mode = GoogleStt.modeName(this@AssistantService)
+            report(
+                when (result) {
+                    // The heard text is added after formatting, so a "%" in it can't break the message.
+                    is GoogleStt.Result.Text -> "$mode heard, in %.1f s including your speech:\n".format(ms / 1000f) + result.text
+                    is GoogleStt.Result.Unavailable -> result.reason
+                    GoogleStt.Result.Nothing -> "Google didn't hear any words. Speak a little closer and try again"
+                },
+            )
         }
     }
 
-    /** Saves the last recording as a WAV file in Downloads/PocketAssistant. */
+    /** Saves the last wake word recording as a WAV file in Downloads/PocketAssistant. */
     fun saveLastRecording(report: (String) -> Unit) {
         scope.launch(Dispatchers.IO) {
             val result = runCatching { Recordings.saveLast(this@AssistantService) }
@@ -251,7 +231,9 @@ class AssistantService : Service() {
         if (callJob?.isActive == true) return
         val active = loop ?: return
         callJob = scope.launch {
-            val session = CallSession(this@AssistantService, ::speak, { active.capture(it) }, { active.understand(it) })
+            val session = CallSession(this@AssistantService, ::speak) {
+                (active.listenWithGoogleNow() as? GoogleStt.Result.Text)?.text
+            }
             session.run(number)
         }
     }
