@@ -140,11 +140,16 @@ class AssistantService : Service() {
                 done.complete(Unit)
             }
         })
+        // The microphone ignores audio while the assistant talks. "finally" makes sure it always listens again,
+        // even if speaking is interrupted. Before, an interruption could leave the wake word deaf.
         loop?.speaking = true
-        voice.speak(text, TextToSpeech.QUEUE_FLUSH, null, "reply")
-        withTimeoutOrNull(30_000) { done.await() }
-        delay(250)
-        loop?.speaking = false
+        try {
+            voice.speak(text, TextToSpeech.QUEUE_FLUSH, null, "reply")
+            withTimeoutOrNull(30_000) { done.await() }
+            delay(250)
+        } finally {
+            loop?.speaking = false
+        }
     }
 
     /** Spoken codes are English digits, so they're always read in English. */
