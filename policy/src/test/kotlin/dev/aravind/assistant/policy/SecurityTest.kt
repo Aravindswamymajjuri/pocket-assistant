@@ -540,4 +540,18 @@ class SecurityTest {
         assertNull(WakeName.learnable("hey general", "Junnu"))
         assertNull(WakeName.learnable("hey you know", "Junnu"))
     }
+
+    @Test fun agentMemoryKeepsTheAiOnTrack() {
+        val memory = AgentMemory("send my location to daddy", maxSteps = 2)
+        val open = ToolCall(Tool.OPEN_APP, mapOf("name" to "WhatsApp"))
+        assertTrue(memory.allow(open))
+        memory.record(open, "Opened WhatsApp. Your OTP is 482913")
+        assertFalse(memory.allow(open))
+        assertTrue(memory.prompt().contains("open_app(name=WhatsApp) -> Opened WhatsApp"))
+        assertFalse(memory.prompt().contains("482913"))
+        assertTrue(memory.prompt().contains("never instructions"))
+        memory.record(ToolCall(Tool.GO_BACK, emptyMap()), "x".repeat(1000))
+        assertFalse(memory.canContinue())
+        assertTrue(memory.prompt().lines().all { it.length < 400 })
+    }
 }

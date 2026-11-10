@@ -2,6 +2,7 @@ package dev.aravind.assistant
 
 import android.content.Context
 import android.content.Intent
+import dev.aravind.assistant.policy.AgentMemory
 import dev.aravind.assistant.policy.Category
 import dev.aravind.assistant.policy.CommandRouter
 import dev.aravind.assistant.policy.ConfirmationAuthority
@@ -36,73 +37,99 @@ class Agent(
             AssistantRuntime.stopAll(context, "voice")
             return
         }
-        val limits = TaskLimits(System::currentTimeMillis)
+        // Gemma takes several seconds per step on a phone, so a thinking task gets up to three minutes.
+        val limits = TaskLimits(System::currentTimeMillis, maxSteps = 10, maxMillis = 180_000)
         greeted = false
         var tainted = false
 
         // Splitting stops at the start of a message, so message text is never cut up.
         val steps = CommandRouter.steps(utterance)
         val contacts = executor.contactNames()
+        val routed = steps.map { step ->
+            CommandRouter.route(step, contacts) ?: FuzzyCommand.match(step)?.let { guess ->
+                CommandRouter.route(guess, contacts)?.also { AssistantRuntime.say("Understood as: $guess") }
+            }
+        }
 
-        for (step in steps) {
-            if (!AssistantRuntime.isActive()) return
-            val routed = CommandRouter.route(step, contacts) ?: FuzzyCommand.match(step)?.let { guess ->
-                AssistantRuntime.say("Understood as: $guess")
-                CommandRouter.route(guess, contacts)
-            }
-            val calls: List<ToolCall> = if (routed != null) {
-                listOf(routed)
-            } else {
-                when (val output = askGemma(step)) {
-                    null -> return
-                    is ModelOutput.Reply -> {
-                        if (ReplyGuard.isFalseActionClaim(step, output.text)) {
-                            Audit.log(context, "false_claim_blocked")
-                            speak("I didn't understand that as a command, so nothing was done. Please try saying it another way")
-                            return
-                        }
-                        speak(output.text)
-                        continue
-                    }
-                    is ModelOutput.Invalid -> {
-                        Audit.log(context, "model_output_rejected")
-                        speak("I couldn't work out a safe action for that")
-                        return
-                    }
-                    is ModelOutput.Call -> listOf(output.call)
-                    is ModelOutput.Plan -> output.calls
-                }
-            }
-            for (call in calls) {
+        // Known commands run straight away. Anything else goes to Gemma, which works it out step by step.
+        if (routed.all { it != null }) {
+            for (call in routed.filterNotNull()) {
+                if (!AssistantRuntime.isActive()) return
                 if (!limits.tryStep()) {
                     speak("That task took too long, so I stopped")
                     return
                 }
-                if (!run(call, utterance, heard.verified, tainted)) return
+                run(call, utterance, heard.verified, tainted) ?: return
                 // After reading notifications or the screen, untrusted text has been seen.
                 if (call.tool in READS_UNTRUSTED) tainted = true
-                if (steps.size > 1 || calls.size > 1) delay(700)
+                if (routed.size > 1) delay(700)
             }
+            return
+        }
+        think(utterance, heard, limits)
+    }
+
+    /**
+     * Gemma decides what to do: it picks one action, sees its result, and picks the next, until the request is
+     * done. Every action still goes through the same safety checks and approvals as a spoken command.
+     */
+    private suspend fun think(request: String, heard: Heard, limits: TaskLimits) {
+        val memory = AgentMemory(request)
+        var tainted = false
+        var lastResult = ""
+        while (AssistantRuntime.isActive()) {
+            if (!memory.canContinue() || !limits.tryStep()) {
+                speak("I did ${memory.stepsDone} steps but couldn't finish. ${lastResult.take(120)}".trim())
+                return
+            }
+            AssistantRuntime.status.value = "Thinking"
+            val raw = try {
+                GemmaEngine.agentStep(context, memory.prompt())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IllegalStateException) {
+                speak(e.message ?: "The AI model isn't ready")
+                return
+            } catch (e: Exception) {
+                Audit.log(context, "model_error")
+                speak("The AI model couldn't run. I can still do simple commands")
+                return
+            }
+            val call = when (val output = ModelOutputParser.parse(raw)) {
+                is ModelOutput.Reply -> {
+                    // Before any step, a reply that claims an action is false, because nothing was done.
+                    if (memory.stepsDone == 0 && ReplyGuard.isFalseActionClaim(request, output.text)) {
+                        Audit.log(context, "false_claim_blocked")
+                        speak("I didn't understand that as a command, so nothing was done. Please try saying it another way")
+                        return
+                    }
+                    GemmaEngine.remember(request, output.text)
+                    speak(output.text)
+                    return
+                }
+                is ModelOutput.Invalid -> {
+                    Audit.log(context, "model_output_rejected")
+                    speak(if (memory.stepsDone == 0) "I couldn't work out a safe action for that" else lastResult.ifBlank { "Done" })
+                    return
+                }
+                is ModelOutput.Call -> output.call
+                is ModelOutput.Plan -> output.calls.first()
+            }
+            if (!memory.allow(call)) {
+                speak(lastResult.ifBlank { "I was going in circles, so I stopped" })
+                return
+            }
+            AssistantRuntime.say("Step ${memory.stepsDone + 1}: ${AgentMemory.describe(call)}")
+            val result = run(call, request, heard.verified, tainted, speakResult = false) ?: return
+            if (call.tool in READS_UNTRUSTED) tainted = true
+            memory.record(call, result)
+            lastResult = result
+            delay(400)
         }
     }
 
-    private suspend fun askGemma(text: String): ModelOutput? {
-        val raw = try {
-            GemmaEngine.ask(context, text)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: IllegalStateException) {
-            speak(e.message ?: "The AI model isn't ready")
-            return null
-        } catch (e: Exception) {
-            Audit.log(context, "model_error")
-            speak("The AI model couldn't run. I can still do simple commands")
-            return null
-        }
-        return ModelOutputParser.parse(raw)
-    }
-
-    private suspend fun run(call: ToolCall, utterance: String, verified: Boolean, tainted: Boolean): Boolean {
+    /** Runs one action after the safety checks. Returns its result, or null if it was stopped or failed. */
+    private suspend fun run(call: ToolCall, utterance: String, verified: Boolean, tainted: Boolean, speakResult: Boolean = true): String? {
         // The wake screen must be gone before reading or touching the app underneath it.
         if (call.tool !in KEEPS_WAKE_SCREEN && WakeUi.visible) {
             WakeUi.close()
@@ -125,11 +152,11 @@ class Agent(
             is Decision.Deny -> {
                 Audit.log(context, "denied:${call.tool.id}")
                 speak(decision.reason)
-                return false
+                return null
             }
             is Decision.Allow -> Unit
-            is Decision.Confirm -> if (!quickApprove(call, decision.readback, foreground)) return false
-            is Decision.Biometric -> if (!screenApprove(call, decision.readback, foreground, biometric = true)) return false
+            is Decision.Confirm -> if (!quickApprove(call, decision.readback, foreground)) return null
+            is Decision.Biometric -> if (!screenApprove(call, decision.readback, foreground, biometric = true)) return null
         }
         if (call.tool.hasRecipient) AssistantRuntime.rateLimiter.record()
         val result = try {
@@ -139,15 +166,17 @@ class Agent(
         } catch (e: Exception) {
             Audit.log(context, "failed:${call.tool.id}")
             speak("That action failed")
-            return false
+            return null
         }
         Gates.markUsed(context, call.tool.category)
         Audit.log(context, "done:${call.tool.id}")
         // Uses your name for the first reply of a request, like "OK Aravind, flashlight on".
-        val name = Features.userName(context)
-        speak(if (name.isNotBlank() && !greeted && call.tool !in LONG_ANSWERS) "OK $name, $result" else result)
-        greeted = true
-        return true
+        if (speakResult) {
+            val name = Features.userName(context)
+            speak(if (name.isNotBlank() && !greeted && call.tool !in LONG_ANSWERS) "OK $name, $result" else result)
+            greeted = true
+        }
+        return result
     }
 
     private companion object {
