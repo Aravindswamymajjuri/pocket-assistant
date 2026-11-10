@@ -459,6 +459,7 @@ class VoiceLoop(
 
     // The room's background noise level, and the last moment real speech was heard.
     private var noiseFloor = 0.01f
+    private var phrasesHeard = 0
     private var lastSpeechFrame = -1000L
 
     // Microphone checks: samples read since recording started, samples Android dropped, and the buffer size.
@@ -680,6 +681,14 @@ class VoiceLoop(
                     val check = watcher ?: Collector(engines.newVad(VAD_SILENCE), WAKE_PAUSE_MS).also { watcher = it }
                     val phrase = check.feed(frame)
                     if (check.speechInLastFeed && loudEnough) lastSpeechFrame = frameIndex
+                    if (phrase != null) {
+                        // A phrase ended without waking. Saying so shows the microphone works and how loud you were.
+                        phrasesHeard++
+                        val peak = (phrase.maxOfOrNull { kotlin.math.abs(it) } ?: 0f) * 100
+                        AssistantRuntime.wakeInfo.value = "Heard you speak (%d so far, loudest %.0f%%, room noise %.1f%%), but not \"%s\"".format(
+                            phrasesHeard, peak, noiseFloor * 100, WakeName.phrase(Features.wakeName(context)).lowercase(),
+                        )
+                    }
                     if (phrase != null || check.expired()) check.restart()
 
                     // A gentle boost for quiet speech. Strong boosts distort the voice and hurt detection.
