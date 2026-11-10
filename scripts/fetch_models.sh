@@ -15,7 +15,7 @@ WAKE_PHRASES=${WAKE_PHRASES:-"HEY ASSISTANT"}
 mkdir -p "$WORK" app/libs
 rm -rf "$OUT"
 rm -rf "$DESKTOP_OUT"
-mkdir -p "$OUT"/kws "$OUT"/vad "$OUT"/piper "$OUT"/speaker "$DESKTOP_OUT"/whisper "$DESKTOP_OUT"/moonshine
+mkdir -p "$OUT"/kws "$OUT"/vad "$OUT"/namecheck "$OUT"/piper "$OUT"/speaker "$DESKTOP_OUT"/whisper "$DESKTOP_OUT"/moonshine
 
 get() {
   local url=$1 name
@@ -28,6 +28,7 @@ get "$BASE/v$SHERPA_VERSION/sherpa-onnx-$SHERPA_VERSION.aar"
 get "$BASE/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
 get "$BASE/asr-models/silero_vad.onnx"
 get "$BASE/asr-models/sherpa-onnx-moonshine-base-en-quantized-2026-02-27.tar.bz2"
+get "$BASE/asr-models/sherpa-onnx-nemo-ctc-en-conformer-small.tar.bz2"
 get "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin"
 get "$BASE/tts-models/vits-piper-en_US-lessac-medium.tar.bz2"
 get "$BASE/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
@@ -74,6 +75,10 @@ with open(sys.argv[2], "w", encoding="utf-8") as out:
 PY
 
 cp "$WORK/silero_vad.onnx" "$OUT/vad/silero_vad.onnx"
+
+# A small English model (45 MB) the phone uses only to double-check the wake word name.
+tar -xjf "$WORK/sherpa-onnx-nemo-ctc-en-conformer-small.tar.bz2" -C "$WORK"
+cp "$WORK/sherpa-onnx-nemo-ctc-en-conformer-small/model.int8.onnx" "$WORK/sherpa-onnx-nemo-ctc-en-conformer-small/tokens.txt" "$OUT/namecheck/"
 
 # Moonshine v2 Base is used only by the laptop app's self-test. The phone app uses Google speech recognition.
 tar -xjf "$WORK/sherpa-onnx-moonshine-base-en-quantized-2026-02-27.tar.bz2" -C "$WORK"

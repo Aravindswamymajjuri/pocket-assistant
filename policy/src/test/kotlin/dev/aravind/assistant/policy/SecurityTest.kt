@@ -523,4 +523,21 @@ class SecurityTest {
         assertEquals(listOf("CHINTU", "CHINTOO"), WakeName.spellings("CHINTU"))
         assertEquals(listOf("SITA RAM"), WakeName.spellings("SITA RAM"))
     }
+
+    @Test fun nameCheckAcceptsSoundAlikesOnly() {
+        assertTrue(WakeName.nameHeard("Hey, Juno,", "Junnu"))
+        assertTrue(WakeName.nameHeard("hey ju new", "Junnu"))
+        assertTrue(WakeName.nameHeard("hey janu", "Junnu"))
+        assertTrue(WakeName.nameHeard("Hey Junnu", "Junnu"))
+        assertFalse(WakeName.nameHeard("Hey June, are you coming?", "Junnu"))
+        assertFalse(WakeName.nameHeard("Hey, do you know?", "Junnu"))
+        assertFalse(WakeName.nameHeard("Hi, Jenny.", "Junnu"))
+        assertFalse(WakeName.nameHeard("hey general", "Junnu"))
+        assertFalse(WakeName.nameHeard("Hi, my name is John.", "Junnu"))
+        assertFalse(WakeName.nameHeard("hey general", "Junnu", listOf("juno")))
+        assertTrue(WakeName.nameHeard("hi jonah", "Junnu", listOf("jonah")))
+        assertEquals("juno", WakeName.learnable("Hey, Juno.", "Junnu"))
+        assertNull(WakeName.learnable("hey general", "Junnu"))
+        assertNull(WakeName.learnable("hey you know", "Junnu"))
+    }
 }

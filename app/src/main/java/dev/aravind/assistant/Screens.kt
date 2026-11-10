@@ -651,6 +651,23 @@ private fun HomeScreen(activity: FragmentActivity) {
                 if (level == sensitivity) Button(onClick = onClick) { Text(label) } else OutlinedButton(onClick = onClick) { Text(label) }
             }
         }
+        val learned = remember(refreshKey) { Features.learnedWakeWords(activity) }
+        Button(
+            onClick = {
+                val service = AssistantService.instance
+                if (service == null) {
+                    message = "Turn on the assistant first"
+                } else {
+                    service.teachWakeWord { text -> activity.runOnUiThread { message = text; refresh++ } }
+                }
+            },
+            Modifier.fillMaxWidth(),
+        ) { Text("Teach my wake word") }
+        Text(
+            if (learned.isEmpty()) "Say your wake word 5 times so the assistant learns how you say it"
+            else "Learned from your voice: ${learned.joinToString()}",
+            style = MaterialTheme.typography.bodySmall,
+        )
         ToggleRow("Wake word", "The mic stays open while this is on", wakeOn) { on ->
             Features.setWakeWord(activity, on)
             refresh++

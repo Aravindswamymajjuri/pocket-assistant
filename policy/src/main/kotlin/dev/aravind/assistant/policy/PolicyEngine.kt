@@ -490,14 +490,17 @@ object WakeName {
      * Every way of calling the assistant that the fast detector should accept, joined with "/".
      * Higher sensitivity wakes more easily, but may also wake by mistake more often.
      */
-    fun keywords(tokenizer: BpeTokenizer, name: String, sensitivity: WakeSensitivity): String? {
+    fun keywords(tokenizer: BpeTokenizer, name: String, sensitivity: WakeSensitivity, learned: List<String> = emptyList()): String? {
         val upper = name.trim().uppercase()
         val greetings = when (sensitivity) {
             WakeSensitivity.HIGH -> listOf("HEY", "HI", "HELLO", "OK", "OKAY")
             WakeSensitivity.NORMAL -> listOf("HEY", "HI", "HELLO", "OK")
             WakeSensitivity.LOW -> listOf("HEY")
         }
-        val phrases = greetings.flatMap { greeting -> spellings(upper).map { "$greeting $it" } }
+        // Words learned from your own voice ("Teach my wake word") are listened for too.
+        val extra = learned.map { it.uppercase().filter { c -> c in 'A'..'Z' } }.filter { it.length >= 2 }
+        val names = (spellings(upper) + extra).distinct().take(MAX_SPELLINGS + MAX_LEARNED)
+        val phrases = greetings.flatMap { greeting -> names.map { "$greeting $it" } }
         // The name on its own isn't added. In testing it competed with "hey" plus the name.
         val lines = phrases.mapNotNull { line(tokenizer, it, sensitivity.boost, sensitivity.threshold) }
         return lines.takeIf { it.isNotEmpty() }?.joinToString("/")
@@ -529,6 +532,59 @@ object WakeName {
     }
 
     private const val MAX_SPELLINGS = 5
+    const val MAX_LEARNED = 4
+
+    /** Spells a word the way it sounds, so "Junnu", "Juno" and "Junoo" all become "junu". */
+    fun soundForm(word: String): String {
+        var w = word.lowercase().filter { it in 'a'..'z' }
+        w = w.replace(Regex("(.)\\1+"), "$1")
+        for ((from, to) in listOf("oo" to "u", "ew" to "u", "ow" to "u", "ou" to "u")) w = w.replace(from, to)
+        if (w.endsWith("o")) w = w.dropLast(1) + "u"
+        return w
+    }
+
+    private fun words(text: String) = text.lowercase().split(Regex("[^a-z]+")).filter { it.isNotEmpty() }
+
+    /**
+     * The second wake check, on what a small speech model heard: a greeting and then the name, or the name on its own
+     * in a short phrase. Words learned from your voice count as the name too. "Hey Juno" wakes "Junnu";
+     * "hey June", "you know" and "Jenny" don't.
+     */
+    fun nameHeard(text: String, name: String, learned: Collection<String> = emptyList()): Boolean {
+        val spoken = words(text)
+        val targets = (listOf(name.replace(" ", "")) + learned).map(::soundForm).filter { it.length >= 2 }.toSet()
+        for (start in 0..1) {
+            if (start == 1 && (spoken.isEmpty() || spoken[0] !in WAKE_GREETINGS)) continue
+            if (start == 0 && spoken.size > 3) continue
+            for (count in 1..2) {
+                if (spoken.size < start + count) continue
+                val heard = soundForm(spoken.subList(start, start + count).joinToString(""))
+                if (heard.isEmpty()) continue
+                val close = targets.any { t -> heard.first() == t.first() && heard.last() == t.last() && ContactMatcher.distance(heard, t) <= 1 }
+                if (close) return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * While teaching the wake word, the word the speech model heard in place of the name, if it's close enough to be
+     * safe to learn. "Hey Juno" gives "juno" for Junnu. Very different words, like "general", are never learned.
+     */
+    fun learnable(text: String, name: String): String? {
+        val spoken = words(text)
+        val start = if (spoken.isNotEmpty() && spoken[0] in WAKE_GREETINGS) 1 else 0
+        val target = soundForm(name.replace(" ", ""))
+        val nameWords = name.trim().split(' ').count { it.isNotEmpty() }
+        return (nameWords..nameWords + 1).mapNotNull { count ->
+            if (spoken.size < start + count) return@mapNotNull null
+            val heard = spoken.subList(start, start + count).joinToString("")
+            val form = soundForm(heard)
+            if (form.length < 2 || form.first() != target.firstOrNull()) return@mapNotNull null
+            val distance = ContactMatcher.distance(form, target)
+            if (distance <= 2) heard to distance else null
+        }.minByOrNull { it.second }?.first
+    }
 }
 
 enum class WakeSensitivity(val boost: Float, val threshold: Float) {

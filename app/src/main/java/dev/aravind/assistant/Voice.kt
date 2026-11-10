@@ -23,6 +23,10 @@ import android.media.ToneGenerator
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.KeywordSpotter
 import com.k2fsa.sherpa.onnx.KeywordSpotterConfig
+import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineNemoEncDecCtcModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
@@ -57,6 +61,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private const val SAMPLE_RATE = 16_000
 
+// Phrases the name check looks at: long enough for "hey" plus a name, short enough to be quick.
+private const val NAME_MIN_SAMPLES = SAMPLE_RATE * 2 / 5
+private const val NAME_MAX_SAMPLES = SAMPLE_RATE * 4
+
 // A wake word only counts if real speech was heard in the last 1.5 seconds (15 frames of 0.1 s).
 private const val WAKE_SPEECH_FRAMES = 15
 
@@ -71,7 +79,7 @@ private const val WAKE_PAUSE_MS = 300
 
 /** Voice models ship in the APK and are unpacked to private storage on first use. */
 object VoiceAssets {
-    private const val VERSION = "9"
+    private const val VERSION = "10"
 
     fun dir(context: Context) = File(context.noBackupFilesDir, "voice")
 
@@ -139,8 +147,54 @@ class VoiceEngines(context: Context) {
         val vocab = File(root, "kws/bpe.vocab")
         val tokenizer = BpeTokenizer.parse(vocab.readLines().asSequence())
         val sensitivity = Features.wakeSensitivity(context)
-        return WakeName.keywords(tokenizer, Features.wakeName(context), sensitivity)
+        return WakeName.keywords(tokenizer, Features.wakeName(context), sensitivity, Features.learnedWakeWords(context))
             ?: requireNotNull(WakeName.keywords(tokenizer, WakeName.DEFAULT, sensitivity))
+    }
+
+    /**
+     * A small speech model (NeMo Conformer CTC small, 45 MB) used only to check for your assistant's name when
+     * the fast wake detector misses it. It can't make up words, so noise gives empty text.
+     */
+    private val nameModel by lazy {
+        OfflineRecognizer(
+            config = OfflineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
+                modelConfig = OfflineModelConfig(
+                    nemo = OfflineNemoEncDecCtcModelConfig(model = "$root/namecheck/model.int8.onnx"),
+                    tokens = "$root/namecheck/tokens.txt",
+                    numThreads = 2,
+                ),
+            ),
+        )
+    }
+
+    private val nameLock = Any()
+
+    fun nameText(samples: FloatArray): String = synchronized(nameLock) {
+        val stream = nameModel.createStream()
+        try {
+            stream.acceptWaveform(samples, SAMPLE_RATE)
+            nameModel.decode(stream)
+            return nameModel.getResult(stream).text.trim()
+        } finally {
+            stream.release()
+        }
+    }
+
+    /** For teaching the wake word: whether the fast detector catches this recording. */
+    fun spotterCatches(context: Context, samples: FloatArray): Boolean {
+        val stream = spotter.createStream(wakeKeywords(context))
+        try {
+            stream.acceptWaveform(samples, SAMPLE_RATE)
+            stream.acceptWaveform(FloatArray(SAMPLE_RATE / 2), SAMPLE_RATE)
+            while (spotter.isReady(stream)) {
+                spotter.decode(stream)
+                if (spotter.getResult(stream).keyword.isNotBlank()) return true
+            }
+            return false
+        } finally {
+            stream.release()
+        }
     }
 
     private val extractor by lazy {
@@ -448,6 +502,9 @@ class VoiceLoop(
     @Volatile
     private var wakeChanged = false
 
+    @Volatile
+    private var checking = false
+
     // Set while Google listens for a confirmation or the speech test, so the app's microphone is released.
     @Volatile
     private var micPaused = false
@@ -690,6 +747,12 @@ class VoiceLoop(
                         )
                     }
                     if (phrase != null || check.expired()) check.restart()
+                    // The second check: a small speech model listens for the name in each short phrase.
+                    if (phrase != null && phrase.size in NAME_MIN_SAMPLES..NAME_MAX_SAMPLES && !checking &&
+                        frameIndex - lastSpeechFrame <= WAKE_SPEECH_FRAMES
+                    ) {
+                        checkName(phrase)
+                    }
 
                     // A gentle boost for quiet speech. Strong boosts distort the voice and hurt detection.
                     if (level > 0.002f) wakeGain = (wakeGain * 0.9f + (0.05f / level).coerceIn(1f, 3f) * 0.1f)
@@ -774,6 +837,34 @@ class VoiceLoop(
     private fun isOwnerVoice(samples: FloatArray): Boolean {
         if (!Features.wakeOnlyMyVoice(context) || !VoiceId.isEnrolled(context)) return true
         return runCatching { VoiceId.matches(context, engines.embedding(samples)) }.getOrDefault(false)
+    }
+
+    private fun checkName(samples: FloatArray) {
+        checking = true
+        scope.launch(Dispatchers.Default) {
+            try {
+                val name = Features.wakeName(context)
+                val text = engines.nameText(samples)
+                val wanted = WakeName.phrase(name).lowercase()
+                if (!WakeName.nameHeard(text, name, Features.learnedWakeWords(context))) {
+                    if (text.isNotBlank()) AssistantRuntime.wakeInfo.value = "Heard \"$text\", not \"$wanted\""
+                    return@launch
+                }
+                if (!isOwnerVoice(samples)) {
+                    AssistantRuntime.wakeInfo.value = "Heard \"$text\", but not your saved voice"
+                    return@launch
+                }
+                if (busy || listenRequested.get() || !wakeAllowed()) return@launch
+                AssistantRuntime.wakeInfo.value = "Woke up: heard \"$text\""
+                AssistantRuntime.lastAudio = samples
+                wakeUp()
+                listenRequested.set(true)
+            } catch (e: Exception) {
+                Audit.log(context, "name_check_failed:${e.javaClass.simpleName}")
+            } finally {
+                checking = false
+            }
+        }
     }
 
     /** Tells you the wake word was heard, without needing to look at the screen. */

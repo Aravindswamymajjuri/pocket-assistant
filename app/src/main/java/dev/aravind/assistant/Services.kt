@@ -200,6 +200,45 @@ class AssistantService : Service() {
         return true
     }
 
+    /**
+     * Records you saying the wake word five times and learns what the speech model hears for your voice,
+     * like "juno" for "Junnu". Only words close to the name are learned, so it can't learn something like "general".
+     */
+    fun teachWakeWord(report: (String) -> Unit) {
+        val active = loop ?: return report("Turn on the assistant first")
+        val voice = engines ?: return report("The voice system is still starting")
+        scope.launch {
+            val context = this@AssistantService
+            val name = Features.wakeName(context)
+            val phrase = WakeName.phrase(name).lowercase()
+            val heardWords = ArrayList<String>()
+            var takes = 0
+            var fast = 0
+            var named = 0
+            for (round in 1..5) {
+                report("Say \"$phrase\" now ($round of 5)")
+                speak("Say $phrase")
+                val samples = active.capture(6_000) ?: continue
+                takes++
+                val text = withContext(Dispatchers.Default) { voice.nameText(samples) }
+                if (withContext(Dispatchers.Default) { voice.spotterCatches(context, samples) }) fast++
+                if (WakeName.nameHeard(text, name)) named++
+                WakeName.learnable(text, name)?.let { heardWords += it.lowercase() }
+            }
+            // A word is kept if it was heard at least twice, or if it's already very close to the name.
+            val learned = heardWords.groupingBy { it }.eachCount()
+                .filter { (word, count) -> count >= 2 || WakeName.nameHeard(word, name) }
+                .keys.take(WakeName.MAX_LEARNED)
+            Features.setLearnedWakeWords(context, learned)
+            loop?.reloadWakeName()
+            Audit.log(context, "wake_taught:${learned.size}")
+            val summary = "Heard you $takes of 5 times. Fast detector caught $fast, name check caught $named. " +
+                if (learned.isEmpty()) "Nothing new to learn." else "Learned: ${learned.joinToString()}. Try the wake word now."
+            report(summary)
+            speak(if (learned.isEmpty()) "Done" else "Got it. Try $phrase now")
+        }
+    }
+
     fun onWakeNameChanged() {
         loop?.reloadWakeName()
     }

@@ -137,7 +137,16 @@ object Features {
     fun wakeOnlyMyVoice(context: Context) = prefs(context).getBoolean("wake_my_voice", false)
     fun setWakeOnlyMyVoice(context: Context, value: Boolean) = prefs(context).edit().putBoolean("wake_my_voice", value).apply()
     fun wakeName(context: Context): String = prefs(context).getString("name", null) ?: WakeName.DEFAULT
-    fun setWakeName(context: Context, value: String) = prefs(context).edit().putString("name", value.trim()).apply()
+    /** A new name forgets the words learned for the old one. */
+    fun setWakeName(context: Context, value: String) =
+        prefs(context).edit().putString("name", value.trim()).remove("wake_learned").apply()
+
+    /** Words the speech model heard when you said your wake word, from "Teach my wake word". */
+    fun learnedWakeWords(context: Context): List<String> =
+        prefs(context).getString("wake_learned", null).orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }
+
+    fun setLearnedWakeWords(context: Context, words: List<String>) =
+        prefs(context).edit().putString("wake_learned", words.joinToString(",")).apply()
 
     /** The assistant understands English only. */
     @Suppress("UNUSED_PARAMETER")
