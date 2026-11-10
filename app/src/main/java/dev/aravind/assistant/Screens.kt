@@ -1,6 +1,7 @@
 package dev.aravind.assistant
 
 import android.Manifest
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -205,6 +206,31 @@ object WakeUi {
 }
 
 /** The screen shown when the wake word is heard. */
+/**
+ * Starts listening straight away, without the wake word. Android opens this when Pocket Assistant is the
+ * phone's assistant and you long-press the home or power button, and the "Talk" Quick Settings tile uses it too.
+ */
+class AssistLauncherActivity : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        startListening(this)
+        finish()
+    }
+
+    companion object {
+        fun startListening(context: Context) {
+            val service = AssistantService.instance
+            if (service == null || !AssistantRuntime.armed.value) {
+                // The assistant is off, so the app opens and you can turn it on.
+                context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                return
+            }
+            WakeUi.open(context)
+            service.startService(Intent(service, AssistantService::class.java).setAction(AssistantService.ACTION_LISTEN))
+        }
+    }
+}
+
 class WakeActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -588,6 +614,22 @@ private fun HomeScreen(activity: FragmentActivity) {
             },
             Modifier.fillMaxWidth(),
         ) { Text("Save wake recording") }
+        Text("Start without the wake word", style = MaterialTheme.typography.bodyLarge)
+        Text(
+            "Make Pocket Assistant your phone's assistant: in the screen that opens, choose Digital assistant app, " +
+                "then Pocket Assistant. Long-press the home button or power button to talk. " +
+                "You can also add the Talk tile to Quick Settings.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedButton(
+            onClick = {
+                val opened = runCatching {
+                    activity.startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
+                }.isSuccess || runCatching { activity.startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)) }.isSuccess
+                if (!opened) message = "Open Settings > Apps > Default apps > Digital assistant app, and choose Pocket Assistant"
+            },
+            Modifier.fillMaxWidth(),
+        ) { Text("Set as phone assistant") }
         val micInfo by AssistantRuntime.micInfo.collectAsState()
         if (micInfo.isNotBlank()) Text(micInfo, style = MaterialTheme.typography.bodySmall)
         val sensitivity = remember(refreshKey) { Features.wakeSensitivity(activity) }

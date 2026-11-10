@@ -594,3 +594,18 @@ class StopTileService : TileService() {
         tile.updateTile()
     }
 }
+
+/** A Quick Settings button that starts listening at once, for when the wake word doesn't catch you. */
+class TalkTileService : TileService() {
+    override fun onStartListening() {
+        val tile = qsTile ?: return
+        tile.state = if (AssistantRuntime.armed.value) Tile.STATE_INACTIVE else Tile.STATE_UNAVAILABLE
+        tile.label = "Talk"
+        tile.updateTile()
+    }
+
+    override fun onClick() {
+        @Suppress("DEPRECATION")
+        startActivityAndCollapse(Intent(this, AssistLauncherActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+}
