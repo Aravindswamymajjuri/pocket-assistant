@@ -684,4 +684,43 @@ class SecurityTest {
         assertEquals(null, CommandRouter.followUp("open it", Tool.OPEN_APP))
         assertEquals(null, CommandRouter.followUp("open WhatsApp", Tool.READ_NOTIFICATIONS))
     }
+
+    @Test fun formsAreFilledBoxByBox() {
+        val gmail = FormFill.parse("fill the matter in that to as ravi@gmail.com, subject as leave letter and compose as I am not well and need leave")!!
+        assertEquals(listOf("to", "subject", "compose"), gmail.map { it.text("field") })
+        assertEquals("I am not well and need leave", gmail[2].text("text"))
+        assertEquals("hello how are you", FormFill.parse("type hello how are you in the body")!!.single().text("text"))
+        assertEquals(
+            listOf("name", "phone number", "city"),
+            FormFill.parse("fill the details: name as Aravind, phone number as 9876543210 and city as Hyderabad")!!.map { it.text("field") },
+        )
+        assertEquals("weekly report", FormFill.parse("set the subject to be weekly report")!!.single().text("text"))
+        assertEquals(null, FormFill.parse("open gmail and go to compose"))
+        assertEquals(null, FormFill.parse("send a message to ravi saying hi"))
+        assertEquals(null, FormFill.parse("set the volume to 50"))
+        assertEquals(null, FormFill.parse("call ravi and tell him to come"))
+    }
+
+    @Test fun textBoxesAreFoundByTheirLabels() {
+        // Like Gmail's compose screen: To has only a label beside it, Subject has a hint, the message box has a hint.
+        val boxes = listOf(
+            FieldInfo(viewId = "com.google.android.gm:id/to", nearby = "To"),
+            FieldInfo(hint = "Subject", viewId = "com.google.android.gm:id/subject"),
+            FieldInfo(hint = "Compose email", viewId = "com.google.android.gm:id/composearea_tap_trap_bottom", multiLine = true, height = 600),
+        )
+        assertEquals(0, FieldMatcher.pick("to", boxes))
+        assertEquals(1, FieldMatcher.pick("subject", boxes))
+        assertEquals(2, FieldMatcher.pick("compose", boxes))
+        assertEquals(2, FieldMatcher.pick("matter", boxes))
+        assertEquals(2, FieldMatcher.pick("body", boxes))
+        assertTrue(FieldMatcher.isRecipient("to"))
+        assertEquals("ravi.kumar@gmail.com", FieldMatcher.spokenEmail("Ravi dot kumar at gmail dot com"))
+        assertEquals("ravi@gmail.com", FieldMatcher.spokenEmail("ravi at gmail.com"))
+        assertEquals("ravi@gmail.com", FieldMatcher.spokenEmail("Ravi @ gmail.com"))
+        assertEquals("Ravi", FieldMatcher.spokenEmail("Ravi"))
+        // A box with no label at all is still found for the message.
+        val plain = listOf(FieldInfo(height = 80), FieldInfo(multiLine = true, height = 500))
+        assertEquals(1, FieldMatcher.pick("message", plain))
+        assertEquals(null, FieldMatcher.pick("city", plain))
+    }
 }

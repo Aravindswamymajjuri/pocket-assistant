@@ -101,8 +101,8 @@ enum class Tool(
     LONG_PRESS("long_press", Risk.L0_SAFE, Category.SCREEN, mapOf("text" to TextParam(80)), "Long-press a visible button or label"),
     ENTER_TEXT(
         "enter_text", Risk.L0_SAFE, Category.SCREEN,
-        mapOf("text" to TextParam(300), "field" to TextParam(80, required = false)),
-        "Type text into a text box on the screen, optionally the box with this label",
+        mapOf("text" to TextParam(1000), "field" to TextParam(80, required = false)),
+        "Fill a text box in the open app, like To, Subject or the message in Gmail. field is the box's label",
     ),
     RECENT_APPS("recent_apps", Risk.L0_SAFE, Category.SCREEN, description = "Show recent apps, to switch between apps"),
     OPEN_WEBSITE("open_website", Risk.L0_SAFE, Category.WEB, mapOf("url" to TextParam(300)), "Open a website address in the browser"),

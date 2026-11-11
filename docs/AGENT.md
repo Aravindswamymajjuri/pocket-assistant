@@ -12,6 +12,18 @@
 
 Every tool call, whether from a rule or from Gemma, goes through the same policy checks.
 
+## Filling text boxes in any app
+
+Open the screen first (for example "open Gmail and go to compose"), then say what goes where:
+
+- "fill to as ravi@gmail.com, subject as leave letter and body as I am not well today"
+- "type hello how are you in the message box"
+- "fill the details: name as Aravind, phone number as 98765 43210 and city as Hyderabad"
+
+Boxes are found by their hint, their id, and the label written next to them, with common other words
+("matter" or "compose" for the message, "recipient" for To). A contact's name in a To box becomes their saved
+email address, and "ravi at gmail dot com" becomes ravi@gmail.com. Filling never presses Send.
+
 ## Follow-ups
 
 The assistant remembers your last few requests, including ones that ran without the AI. After "read my

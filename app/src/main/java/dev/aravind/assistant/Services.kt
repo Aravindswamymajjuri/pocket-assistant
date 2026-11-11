@@ -6,6 +6,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.accessibilityservice.GestureDescription
@@ -25,6 +27,8 @@ import dev.aravind.assistant.policy.BlockedApps
 import dev.aravind.assistant.policy.ScreenAgent
 import dev.aravind.assistant.policy.ScreenItem
 import dev.aravind.assistant.policy.ContactMatcher
+import dev.aravind.assistant.policy.FieldInfo
+import dev.aravind.assistant.policy.FieldMatcher
 import dev.aravind.assistant.policy.SecretRedactor
 import dev.aravind.assistant.policy.WakeName
 import kotlinx.coroutines.CancellationException
@@ -485,16 +489,66 @@ class AutomationService : AccessibilityService() {
         return !bounds.isEmpty && gesture(Path().apply { moveTo(bounds.exactCenterX(), bounds.exactCenterY()) }, 800)
     }
 
-    /** Types into the text box labelled [field], or else the focused or first text box. Password boxes are never used. */
-    fun enterText(field: String?, text: String): Boolean {
-        val root = allowedRoot() ?: return false
-        fun hint(node: AccessibilityNodeInfo) = (node.hintText?.toString() ?: label(node)).lowercase()
-        val wanted = field?.trim()?.lowercase()
-        val target = (if (wanted.isNullOrEmpty()) null else search(root) { it.isEditable && !it.isPassword && hint(it).contains(wanted) })
-            ?: root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable && !it.isPassword }
-            ?: search(root) { it.isEditable && !it.isPassword }
-            ?: return false
-        return typeInto(target, text)
+    /**
+     * Text boxes on the screen, with what's known about each: its hint, id, linked label, and the label
+     * written next to it, like "To" or "Subject" in Gmail. Password boxes are never included.
+     */
+    private fun textBoxes(root: AccessibilityNodeInfo): List<Pair<AccessibilityNodeInfo, FieldInfo>> {
+        val boxes = ArrayList<AccessibilityNodeInfo>()
+        val labels = ArrayList<Pair<String, Rect>>()
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || depth > 40 || !node.isVisibleToUser) return
+            if (node.isEditable) {
+                if (!node.isPassword) boxes += node
+            } else {
+                val text = (node.text ?: node.contentDescription)?.toString()?.trim()
+                if (!text.isNullOrEmpty() && text.length <= 30) {
+                    val bounds = Rect()
+                    node.getBoundsInScreen(bounds)
+                    if (!bounds.isEmpty) labels += text to bounds
+                }
+            }
+            for (index in 0 until node.childCount) walk(node.getChild(index), depth + 1)
+        }
+        walk(root, 0)
+        return boxes.map { box ->
+            val r = Rect()
+            box.getBoundsInScreen(r)
+            val left = labels.filter { (_, l) -> l.right <= r.left + 16 && l.centerY() in r.top..r.bottom }.maxByOrNull { it.second.right }
+            val above = labels.filter { (_, l) -> l.bottom <= r.top + 8 && r.top - l.bottom < 160 && l.left < r.right && l.right > r.left }
+                .maxByOrNull { it.second.bottom }
+            box to FieldInfo(
+                hint = box.hintText?.toString().orEmpty(),
+                description = box.contentDescription?.toString().orEmpty(),
+                viewId = box.viewIdResourceName.orEmpty(),
+                labeledBy = box.labeledBy?.text?.toString().orEmpty(),
+                nearby = (left ?: above)?.first.orEmpty(),
+                multiLine = box.isMultiLine,
+                focused = box.isFocused,
+                height = r.height(),
+            )
+        }
+    }
+
+    /**
+     * Types into the text box you named, like "subject" or "to", in any app. With no name, it uses the focused
+     * or first box. Returns the name of the box it filled, or null if it couldn't.
+     */
+    fun enterText(field: String?, text: String): String? {
+        val root = allowedRoot() ?: return null
+        val boxes = textBoxes(root)
+        val index = FieldMatcher.pick(field, boxes.map { it.second }) ?: return null
+        val (node, info) = boxes[index]
+        if (!typeInto(node, text) && !paste(node, text)) return null
+        return listOf(info.hint, info.nearby, info.labeledBy, info.description).firstOrNull { it.isNotBlank() }?.take(30)
+            ?: field ?: "the text box"
+    }
+
+    /** Some apps ignore typed text from accessibility, but accept a paste. */
+    private fun paste(node: AccessibilityNodeInfo, text: String): Boolean {
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("text", text))
+        node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        return node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
     }
 
     fun showRecents(): Boolean = performGlobalAction(GLOBAL_ACTION_RECENTS)

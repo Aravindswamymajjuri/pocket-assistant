@@ -11,8 +11,8 @@ android {
         applicationId = "dev.aravind.assistant"
         minSdk = 31
         targetSdk = 32
-        versionCode = 28
-        versionName = "2.3.0"
+        versionCode = 29
+        versionName = "2.4.0"
         ndk { abiFilters += "arm64-v8a" }
     }
     signingConfigs {

@@ -35,6 +35,7 @@ import dev.aravind.assistant.policy.ScreenAction
 import dev.aravind.assistant.policy.ScreenAgent
 import dev.aravind.assistant.policy.SecretRedactor
 import dev.aravind.assistant.policy.ContactMatcher
+import dev.aravind.assistant.policy.FieldMatcher
 import dev.aravind.assistant.policy.PhoneTarget
 import dev.aravind.assistant.policy.QuickSettings
 import dev.aravind.assistant.policy.Tool
@@ -92,9 +93,7 @@ class ToolExecutor(private val context: Context) {
         Tool.CALENDAR_EVENTS -> calendarEvents((call.args["days"] as? Long)?.toInt() ?: 1)
         Tool.LIST_APPS -> phone.listApps(call.args["query"] as? String)
         Tool.LONG_PRESS -> automation { if (it.longPress(call.text("text"))) "Done" else "I couldn't find ${call.text("text")} on the screen" }
-        Tool.ENTER_TEXT -> automation {
-            if (it.enterText(call.args["field"] as? String, call.text("text"))) "Typed it" else "I couldn't find a text box to type in"
-        }
+        Tool.ENTER_TEXT -> enterText(call.args["field"] as? String, call.text("text"))
         Tool.RECENT_APPS -> automation { if (it.showRecents()) "Showing recent apps" else "Recent apps couldn't be opened" }
         Tool.OPEN_WEBSITE -> phone.openWebsite(call.text("url"))
         Tool.SEARCH_MUSIC -> phone.searchMusic(call.text("query"))
@@ -541,6 +540,38 @@ class ToolExecutor(private val context: Context) {
     }
 
     /** Contact names, used to tell where a name ends and a message begins. */
+    /** Fills a text box. A contact's name in a "To" box becomes their email address, like Gmail needs. */
+    private fun enterText(field: String?, text: String): String {
+        val service = AutomationService.instance ?: return "Turn on the Accessibility Service for Pocket Assistant first"
+        val spoken = if (FieldMatcher.isRecipient(field)) FieldMatcher.spokenEmail(text) else text
+        val value = if (FieldMatcher.isRecipient(field) && !spoken.contains('@') && !PhoneTarget.looksLikeNumber(spoken)) {
+            emailOf(spoken) ?: spoken
+        } else {
+            spoken
+        }
+        val box = service.enterText(field, value)
+            ?: return if (field == null) "I couldn't find a text box to type in" else "I couldn't find the $field box on this screen"
+        return "Filled $box with \"${value.take(60)}\""
+    }
+
+    /** The email address saved for a contact, if there is one. */
+    private fun emailOf(name: String): String? {
+        if (!granted(Manifest.permission.READ_CONTACTS)) return null
+        val emails = HashMap<String, String>()
+        val columns = arrayOf(ContactsContract.CommonDataKinds.Email.DISPLAY_NAME, ContactsContract.CommonDataKinds.Email.ADDRESS)
+        runCatching {
+            context.contentResolver.query(ContactsContract.CommonDataKinds.Email.CONTENT_URI, columns, null, null, null)?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val who = cursor.getString(0) ?: continue
+                    val address = cursor.getString(1) ?: continue
+                    emails.putIfAbsent(who, address)
+                }
+            }
+        }
+        val found = ContactMatcher.top(name, emails.keys)
+        return if (found.size == 1) emails[found.first()] else null
+    }
+
     fun contactNames(): Collection<String> = runCatching { readContacts().keys }.getOrDefault(emptySet())
 
     /** Finds the contact you meant. If two are equally likely, it asks instead of guessing. */

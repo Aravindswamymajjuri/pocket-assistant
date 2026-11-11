@@ -7,6 +7,7 @@ import dev.aravind.assistant.policy.Category
 import dev.aravind.assistant.policy.CommandRouter
 import dev.aravind.assistant.policy.ConfirmationAuthority
 import dev.aravind.assistant.policy.Decision
+import dev.aravind.assistant.policy.FormFill
 import dev.aravind.assistant.policy.FuzzyCommand
 import dev.aravind.assistant.policy.ModelOutput
 import dev.aravind.assistant.policy.ModelOutputParser
@@ -85,6 +86,20 @@ class Agent(
         AssistantRuntime.agentSteps.value = emptyList()
         greeted = false
         var tainted = false
+
+        // "Fill to as Ravi, subject as Leave and body as ..." fills each box in the open app, without thinking.
+        FormFill.parse(utterance)?.let { fills ->
+            var last = "Done"
+            for (call in fills) {
+                if (!AssistantRuntime.isActive()) return "Stopped"
+                AssistantRuntime.note("Doing: ${doing(call)}")
+                last = run(call, utterance, heard.verified, tainted, speakResult = false) ?: return "Not done"
+                AssistantRuntime.note("Found: $last")
+                if (last.startsWith("I couldn't") || last.startsWith("Turn on")) return finish(last)
+                delay(250)
+            }
+            return finish(if (fills.size == 1) last else "Filled ${fills.size} boxes: ${fills.joinToString(", ") { it.args["field"].toString() }}")
+        }
 
         // Splitting stops at the start of a message, so message text is never cut up.
         val steps = CommandRouter.steps(utterance)
@@ -284,7 +299,7 @@ class Agent(
             Tool.OPEN_NOTIFICATION -> (call.args["from"] as? String)?.let { "Opening the notification from $it" }
                 ?: (call.args["number"] as? Long)?.let { "Opening notification $it" } ?: "Opening the notification"
             Tool.SPEAKERPHONE -> if (call.bool("on")) "Turning on the speaker" else "Turning off the speaker"
-            Tool.ENTER_TEXT -> "Typing into the screen"
+            Tool.ENTER_TEXT -> (call.args["field"] as? String)?.let { "Filling the $it box" } ?: "Typing into the screen"
             Tool.REMEMBER -> "Saving to memory"
             Tool.FORGET -> "Removing from memory"
             else -> AgentMemory.describe(call)
