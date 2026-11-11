@@ -36,9 +36,15 @@ class Agent(
     private val executor = ToolExecutor(context)
     private var greeted = false
 
+    // What the last request did, so a follow-up like "open it" knows what "it" is.
+    private var previousTool: Tool? = null
+    private var previousAt = 0L
+    private var summary: String? = null
+
     suspend fun handle(heard: Heard) {
         AssistantRuntime.taskJob = currentCoroutineContext()[Job]
         var outcome = "Done"
+        summary = null
         try {
             outcome = work(heard)
         } catch (e: CancellationException) {
@@ -48,7 +54,17 @@ class Agent(
         } finally {
             AssistantRuntime.taskJob = null
             AssistantRuntime.finishTask(heard.text, outcome)
+            // Every request is remembered for the next few, including ones that ran without the AI,
+            // so "open it" or "call him" makes sense. Text from notifications and messages is never kept here.
+            if (outcome != "Stopped") GemmaEngine.remember(heard.text, summary ?: outcome)
         }
+    }
+
+    /** What the chat history keeps about one action. Untrusted text, like message contents, is left out. */
+    private fun historyNote(call: ToolCall, result: String): String = when {
+        call.tool == Tool.READ_NOTIFICATIONS -> NotificationsService.safeSummary()
+        call.tool in READS_UNTRUSTED -> "Did: ${doing(call)}"
+        else -> result
     }
 
     /** Speaks [text] and remembers it as the task's outcome. */
@@ -73,12 +89,16 @@ class Agent(
         // Splitting stops at the start of a message, so message text is never cut up.
         val steps = CommandRouter.steps(utterance)
         val contacts = executor.contactNames()
+        // A follow-up like "open it" refers to the request just before, if it was in the last few minutes.
+        var before = previousTool.takeIf { System.currentTimeMillis() - previousAt < FOLLOW_UP_MILLIS }
         val routed = CommandRouter.inContext(
             steps,
             steps.map { step ->
-                CommandRouter.route(step, contacts) ?: FuzzyCommand.match(step)?.let { guess ->
-                    CommandRouter.route(guess, contacts)?.also { AssistantRuntime.say("Understood as: $guess") }
-                }
+                (
+                    CommandRouter.followUp(step, before) ?: CommandRouter.route(step, contacts) ?: FuzzyCommand.match(step)?.let { guess ->
+                        CommandRouter.route(guess, contacts)?.also { AssistantRuntime.say("Understood as: $guess") }
+                    }
+                    ).also { call -> if (call != null) before = call.tool }
             },
         )
 
@@ -151,7 +171,7 @@ class Agent(
                         Audit.log(context, "false_claim_blocked")
                         return finish("I didn't understand that as a command, so nothing was done. Please try saying it another way")
                     }
-                    GemmaEngine.remember(request, output.text)
+                    if (!tainted) summary = output.text
                     AssistantRuntime.note("Answer: ${output.text}")
                     return finish(output.text)
                 }
@@ -204,7 +224,6 @@ class Agent(
             val done = (output is ModelOutput.Call && output.final) || (output is ModelOutput.Plan && calls.size > 1)
             if (done && !needsThought) {
                 val answer = results.joinToString(". ") { it.trim().trimEnd('.') }.take(300)
-                GemmaEngine.remember(request, answer)
                 AssistantRuntime.note("Answer: $answer")
                 return finish(answer)
             }
@@ -262,6 +281,8 @@ class Agent(
             Tool.CREATE_REMINDER -> "Setting a reminder: ${call.text("text")}"
             Tool.DELETE_EVENT -> "Deleting calendar event ${call.long("id")}"
             Tool.OPEN_WEBSITE -> "Opening ${call.text("url")}"
+            Tool.OPEN_NOTIFICATION -> (call.args["from"] as? String)?.let { "Opening the notification from $it" }
+                ?: (call.args["number"] as? Long)?.let { "Opening notification $it" } ?: "Opening the notification"
             Tool.SPEAKERPHONE -> if (call.bool("on")) "Turning on the speaker" else "Turning off the speaker"
             Tool.ENTER_TEXT -> "Typing into the screen"
             Tool.REMEMBER -> "Saving to memory"
@@ -313,6 +334,9 @@ class Agent(
         Gates.markUsed(context, call.tool.category)
         Audit.log(context, "done:${call.tool.id}")
         learn(call)
+        previousTool = call.tool
+        previousAt = System.currentTimeMillis()
+        summary = listOfNotNull(summary?.takeIf { it.length < 200 }, historyNote(call, result).take(250)).joinToString(". ")
         AssistantRuntime.currentApp.value = appName(AutomationService.instance?.targetPackage())
         // Uses your name for the first reply of a request, like "OK Aravind, flashlight on".
         if (speakResult) {
@@ -332,6 +356,8 @@ class Agent(
         val READS_UNTRUSTED = setOf(
             Tool.READ_NOTIFICATIONS, Tool.READ_SCREEN, Tool.SCREEN_TASK, Tool.WEB_ANSWER, Tool.RECENT_MESSAGES, Tool.CALENDAR_EVENTS,
         )
+        const val FOLLOW_UP_MILLIS = 5 * 60_000L
+
         // After these, the AI looks at the result before going on, because the next step depends on what it says.
         val NEEDS_A_LOOK = READS_UNTRUSTED + Tool.READ_DOCUMENT
         // Results that mean a step didn't work, so the AI thinks again instead of reporting it as done.

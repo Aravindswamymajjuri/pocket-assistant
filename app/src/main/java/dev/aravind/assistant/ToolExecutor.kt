@@ -78,6 +78,9 @@ class ToolExecutor(private val context: Context) {
         Tool.READ_NOTIFICATIONS ->
             if (context.getSystemService(KeyguardManager::class.java).isKeyguardLocked) "Unlock your phone first, then ask again"
             else NotificationsService.spokenSummary(context)
+        Tool.OPEN_NOTIFICATION -> NotificationsService.openNotification(
+            context, (call.args["number"] as? Long)?.toInt(), call.args["from"] as? String,
+        )
         Tool.SEND_SMS -> sendSms(call.text("to"), call.text("body"))
         Tool.SEND_WHATSAPP -> sendWhatsApp(call.text("to"), call.text("body"))
         Tool.PLACE_CALL -> placeCall(call.text("to"))

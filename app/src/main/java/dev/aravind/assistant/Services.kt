@@ -24,6 +24,7 @@ import android.view.accessibility.AccessibilityWindowInfo
 import dev.aravind.assistant.policy.BlockedApps
 import dev.aravind.assistant.policy.ScreenAgent
 import dev.aravind.assistant.policy.ScreenItem
+import dev.aravind.assistant.policy.ContactMatcher
 import dev.aravind.assistant.policy.SecretRedactor
 import dev.aravind.assistant.policy.WakeName
 import kotlinx.coroutines.CancellationException
@@ -657,19 +658,86 @@ class NotificationsService : NotificationListenerService() {
         instance = null
     }
 
-    private fun lines(): List<String> {
+    /** A notification as it was read out, so "open the second one" later means the same one. */
+    data class Heard(val key: String, val packageName: String, val app: String, val title: String)
+
+    private fun appLabel(pkg: String): String = runCatching {
+        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+    }.getOrDefault(pkg)
+
+    /** The newest five notifications, newest first. */
+    private fun recent(): List<StatusBarNotification> {
         val items: Array<StatusBarNotification> = activeNotifications ?: return emptyList()
-        return items.filter { !it.isOngoing && it.packageName != packageName }.takeLast(5).mapNotNull { item ->
+        return items.filter { !it.isOngoing && it.packageName != packageName }.sortedByDescending { it.postTime }.filter {
+            val extras = it.notification.extras
+            !extras.getCharSequence(Notification.EXTRA_TITLE).isNullOrBlank() || !extras.getCharSequence(Notification.EXTRA_TEXT).isNullOrBlank()
+        }.take(5)
+    }
+
+    private fun lines(): List<String> {
+        val items = recent()
+        lastRead = items.map { item ->
+            Heard(item.key, item.packageName, appLabel(item.packageName), item.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty())
+        }
+        return items.mapIndexed { index, item ->
             val extras = item.notification.extras
             val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
             val body = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
-            SecretRedactor.redact("$title: $body").takeIf { title.isNotBlank() || body.isNotBlank() }
+            val number = if (items.size > 1) "${index + 1}. " else ""
+            number + SecretRedactor.redact("${appLabel(item.packageName)}, $title: $body")
         }
+    }
+
+    /** Opens a notification like tapping it. Picks by number from the last reading, or by app or sender name. */
+    private fun open(number: Int?, from: String?): String {
+        val heard = lastRead.ifEmpty {
+            recent().map { Heard(it.key, it.packageName, appLabel(it.packageName), it.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()) }
+        }
+        if (heard.isEmpty()) return "You have no notifications to open"
+        val wanted = from?.trim()?.lowercase()
+        val pick = when {
+            !wanted.isNullOrEmpty() -> heard.firstOrNull { it.app.lowercase().contains(wanted) || it.title.lowercase().contains(wanted) }
+                ?: ContactMatcher.top(wanted, heard.map { it.title } + heard.map { it.app }).firstOrNull()
+                    ?.let { name -> heard.firstOrNull { it.title == name || it.app == name } }
+            number != null -> heard.getOrNull(number - 1)
+            else -> heard.first()
+        } ?: return if (wanted != null) "I couldn't find a notification from $from" else "There's no notification number $number"
+        val live = activeNotifications?.firstOrNull { it.key == pick.key }
+        val opened = live?.notification?.contentIntent?.let { intent ->
+            runCatching { intent.send() }.isSuccess
+        } == true
+        if (opened) {
+            if (live != null && live.notification.flags and Notification.FLAG_AUTO_CANCEL != 0) runCatching { cancelNotification(live.key) }
+            return "Opened the ${pick.app} notification${if (pick.title.isBlank()) "" else " from ${pick.title}"}"
+        }
+        // The notification is gone or can't be opened, so open its app instead.
+        val launch = packageManager.getLaunchIntentForPackage(pick.packageName)?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            ?: return "That notification can't be opened anymore"
+        startActivity(launch)
+        return "That notification is gone, so I opened ${pick.app}"
     }
 
     companion object {
         @Volatile
         var instance: NotificationsService? = null
+
+        @Volatile
+        var lastRead: List<Heard> = emptyList()
+
+        /** App and sender names only, never the message text, so earlier notifications can be referred to safely. */
+        fun safeSummary(): String {
+            val heard = lastRead
+            if (heard.isEmpty()) return "Read your notifications: there were none"
+            return "Read ${heard.size} notification(s): " + heard.mapIndexed { i, h ->
+                "${i + 1}. ${h.app}${if (h.title.isBlank()) "" else " (${SecretRedactor.redact(h.title).take(30)})"}"
+            }.joinToString(", ")
+        }
+
+        fun openNotification(context: android.content.Context, number: Int?, from: String?): String {
+            if (context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) return "Unlock your phone first, then ask again"
+            val service = instance ?: return "Turn on notification access for Pocket Assistant in the Settings tab first"
+            return service.open(number, from)
+        }
 
         fun spokenSummary(context: android.content.Context): String {
             val component = android.content.ComponentName(context, NotificationsService::class.java)

@@ -59,6 +59,11 @@ enum class Tool(
     SCROLL("scroll", Risk.L0_SAFE, Category.SCREEN, mapOf("direction" to ChoiceParam(setOf("up", "down"))), "Scroll the screen"),
     TAP_TEXT("tap_text", Risk.L0_SAFE, Category.SCREEN, mapOf("text" to TextParam(80)), "Tap a visible button or label"),
     READ_NOTIFICATIONS("read_notifications", Risk.L0_SAFE, Category.NOTIFICATIONS, description = "Read my notifications aloud"),
+    OPEN_NOTIFICATION(
+        "open_notification", Risk.L0_SAFE, Category.NOTIFICATIONS,
+        mapOf("number" to IntParam(1, 10, required = false), "from" to TextParam(60, required = false)),
+        "Open a notification, like tapping it: by its number from read_notifications (1 is the newest), or by app or sender",
+    ),
     SEND_SMS(
         "send_sms", Risk.L2_OUTBOUND, Category.MESSAGES,
         mapOf("to" to TextParam(60), "body" to TextParam(480)), "Send an SMS",
@@ -259,8 +264,9 @@ object ToolSelector {
         "call|phone|ring|dial|speaker|answer|reject|missed|contact|number" to setOf(
             Tool.PLACE_CALL, Tool.SPEAKERPHONE, Tool.CALL_CONTROL, Tool.FIND_CONTACT, Tool.RECENT_CALLS,
         ),
-        "message|messages|msg|text|sms|whatsapp|chat|reply|send|notification|notifications" to setOf(
-            Tool.SEND_SMS, Tool.SEND_WHATSAPP, Tool.OPEN_CHAT, Tool.RECENT_MESSAGES, Tool.READ_NOTIFICATIONS, Tool.FIND_CONTACT,
+        "message|messages|msg|text|sms|whatsapp|chat|reply|send|notification|notifications|unread" to setOf(
+            Tool.SEND_SMS, Tool.SEND_WHATSAPP, Tool.OPEN_CHAT, Tool.RECENT_MESSAGES, Tool.READ_NOTIFICATIONS,
+            Tool.OPEN_NOTIFICATION, Tool.FIND_CONTACT,
         ),
         "file|files|pdf|document|documents|notes|share|rename|move|folder|download|downloads|summari[sz]e|assignment" to setOf(
             Tool.SEARCH_FILES, Tool.OPEN_FILE, Tool.READ_DOCUMENT, Tool.SHARE_FILE, Tool.RENAME_FILE, Tool.MOVE_FILE,

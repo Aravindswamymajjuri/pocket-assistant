@@ -12,6 +12,13 @@
 
 Every tool call, whether from a rule or from Gemma, goes through the same policy checks.
 
+## Follow-ups
+
+The assistant remembers your last few requests, including ones that ran without the AI. After "read my
+notifications", you can say "open it", "open the second one", "open the WhatsApp notification" or
+"open Ravi's message". Notifications are read newest first and numbered. Only app and sender names are kept
+in this memory, never the message text, so a message can't steer the assistant.
+
 ## Speed
 
 Gemma runs on the phone's CPU, so each thinking step takes several seconds. To keep tasks quick:

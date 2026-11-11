@@ -212,7 +212,7 @@ object CommandRouter {
         find("(?:increase|raise) (?:the )?volume")?.let { return "volume" to mapOf("direction" to "up") }
         find("(?:decrease|lower|reduce) (?:the )?volume")?.let { return "volume" to mapOf("direction" to "down") }
         find("(?:set )?(?:the )?brightness (?:to |at )?(\\d{1,3})(?: ?%| percent)?")?.let { return "brightness" to mapOf("percent" to it[1].toLong()) }
-        find("(?:read|show|check)(?: me)?(?: out)?(?: my| the| all)?(?: new| latest)? notifications?")?.let { return "read_notifications" to emptyMap() }
+        find("(?:read|show|check|tell)(?: me)?(?: out)?(?: my| the| all)?(?: my)?(?: new| latest| unread)? notifications?")?.let { return "read_notifications" to emptyMap() }
         find("(?:set |start )?(?:a |an |the )?timer (?:for )?(\\d{1,4}) (second|seconds|sec|secs|minute|minutes|min|mins|hour|hours)")?.let {
             val unit = when (it[2].lowercase().first()) { 's' -> 1L; 'm' -> 60L; else -> 3600L }
             return "set_timer" to mapOf("seconds" to it[1].toLong() * unit)
@@ -228,6 +228,7 @@ object CommandRouter {
             return "speakerphone" to mapOf("on" to false)
         }
         music(t)?.let { return it }
+        openNotification(t)?.let { return it }
         lookup(t)?.let { return it }
         find("(?:search|google|look up|find)(?: on google| in google)?(?: for| about)? (.+?)(?: on google| in google| on the internet| on internet| online| on the web)?")?.let {
             return "web_search" to mapOf("query" to it[1], "site" to "google")
@@ -261,6 +262,50 @@ object CommandRouter {
         }
         find("play (?:the )?song (.+)")?.let { return "play_music" to mapOf("query" to it[1]) }
         return null
+    }
+
+    private val ordinals = mapOf(
+        "first" to 1L, "1st" to 1L, "one" to 1L, "latest" to 1L, "newest" to 1L, "last" to 1L, "recent" to 1L, "top" to 1L,
+        "second" to 2L, "2nd" to 2L, "two" to 2L, "third" to 3L, "3rd" to 3L, "three" to 3L,
+        "fourth" to 4L, "4th" to 4L, "four" to 4L, "fifth" to 5L, "5th" to 5L, "five" to 5L,
+    )
+
+    private fun notificationCall(which: String?, from: String?): Pair<String, Map<String, Any?>> {
+        val args = HashMap<String, Any?>()
+        which?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }?.let { w -> (w.toLongOrNull() ?: ordinals[w])?.let { args["number"] = it } }
+        from?.trim()?.takeIf { it.isNotEmpty() }?.let { args["from"] = it }
+        return "open_notification" to args
+    }
+
+    /** "Open the WhatsApp notification", "open the second notification", "open the notification from Ravi". */
+    private fun openNotification(t: String): Pair<String, Map<String, Any?>>? {
+        fun find(pattern: String) = Regex(pattern, RegexOption.IGNORE_CASE).matchEntire(t)?.groupValues
+        val which = "(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th|last|latest|newest|recent|top|\\d)"
+        find("(?:open|show|tap|check) (?:the |that |this |my )?(?:$which )?(?:unread |new )?notification(?: number $which)?(?: from (.+))?")?.let {
+            return notificationCall(it[1].ifEmpty { it[2] }, it[3])
+        }
+        find("(?:open|show|tap) (?:the |that |this )?(.+?)(?:'s)? (?:unread |new )?notification")?.let { return notificationCall(null, it[1]) }
+        return null
+    }
+
+    private val followUpOpen = Regex(
+        "(?i)^(?:open|show|tap|check)(?: me)? (?:it|that|this|them|that one|this one|the message|that message|the (\\w+) one)$",
+    )
+    private val followUpFrom = Regex("(?i)^(?:open|show|tap) (?:the )?(?:message|one|notification) from (.+)$")
+    private val followUpPossessive = Regex("(?i)^(?:open|show|tap) (.+?)'s (?:message|notification|one)$")
+
+    /**
+     * Requests that only make sense after the one before. After hearing your notifications,
+     * "open it" or "open the second one" opens that notification instead of looking for an app called "it".
+     */
+    fun followUp(text: String, previous: Tool?): ToolCall? {
+        if (previous != Tool.READ_NOTIFICATIONS && previous != Tool.OPEN_NOTIFICATION) return null
+        val t = normalize(text)
+        val raw = followUpOpen.matchEntire(t)?.let { notificationCall(it.groupValues[1], null) }
+            ?: followUpFrom.matchEntire(t)?.let { notificationCall(null, it.groupValues[1]) }
+            ?: followUpPossessive.matchEntire(t)?.let { notificationCall(null, it.groupValues[1]) }
+            ?: return null
+        return (ToolValidator.validate(raw.first, raw.second) as? Validated.Ok)?.call
     }
 
     /** Common questions about the phone, answered straight from the phone without the AI. */

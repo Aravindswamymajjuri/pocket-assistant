@@ -668,4 +668,20 @@ class SecurityTest {
         assertEquals(Tool.TAKE_PHOTO, CommandRouter.route("take a selfie")?.tool)
         assertEquals(Tool.READ_NOTIFICATIONS, CommandRouter.route("read my notifications")?.tool)
     }
+
+    @Test fun notificationsCanBeOpenedAfterHearingThem() {
+        assertEquals(Tool.READ_NOTIFICATIONS, CommandRouter.route("read my unread notification")?.tool)
+        assertEquals(Tool.READ_NOTIFICATIONS, CommandRouter.route("read all my unread notifications")?.tool)
+        assertEquals(Tool.OPEN_NOTIFICATION, CommandRouter.route("open the unread notification")?.tool)
+        assertEquals(2L, CommandRouter.route("open the second notification")?.long("number"))
+        assertEquals("whatsapp", CommandRouter.route("open the WhatsApp notification")?.text("from")?.lowercase())
+        assertEquals("ravi", CommandRouter.route("open the notification from Ravi")?.text("from")?.lowercase())
+        assertEquals(Tool.OPEN_APP, CommandRouter.route("open WhatsApp")?.tool)
+        // "Open it" only means the notification right after hearing them.
+        assertEquals(Tool.OPEN_NOTIFICATION, CommandRouter.followUp("open it", Tool.READ_NOTIFICATIONS)?.tool)
+        assertEquals(3L, CommandRouter.followUp("open the third one", Tool.READ_NOTIFICATIONS)?.long("number"))
+        assertEquals("ravi", CommandRouter.followUp("open Ravi's message", Tool.READ_NOTIFICATIONS)?.text("from")?.lowercase())
+        assertEquals(null, CommandRouter.followUp("open it", Tool.OPEN_APP))
+        assertEquals(null, CommandRouter.followUp("open WhatsApp", Tool.READ_NOTIFICATIONS))
+    }
 }
