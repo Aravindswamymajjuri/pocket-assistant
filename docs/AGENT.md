@@ -18,7 +18,15 @@ Gemma runs on the phone's CPU, so each thinking step takes several seconds. To k
 
 - Common commands skip the AI entirely: "play Darling songs", "play music", "pause / next / previous / stop the music",
   "turn on speaker", and "call Daddy on speaker" (a call, then the speaker).
+- Battery and storage, missed calls, messages, calendar and "take a photo" are answered straight from the phone.
+- The AI model loads when the assistant starts, not on your first request.
+- Each task keeps one conversation with the AI. The long instructions are read once; later steps only send the new
+  results. Before, every step re-read everything, which was most of the waiting.
+- The AI is told that every tool checks its own result, so it doesn't add extra checking steps.
 - The AI only sees the tools that fit the request, so its prompt is shorter and is read faster.
+- The voice starts speaking after the first sentence is ready, instead of after the whole reply.
+- Fixed waits in settings, Quick Settings and app tabs now finish as soon as the change shows.
+- "Test model" in Settings shows how long the model took, so you can compare the CPU and GPU options.
 - The AI can mark a step as the last one ("final"), or send a whole plan. Those run without another thinking round.
 - The steps panel shows how long each thinking step and each action took.
 - If your phone supports it, turn on the GPU option in Settings for faster thinking.

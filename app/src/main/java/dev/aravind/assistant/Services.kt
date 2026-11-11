@@ -75,6 +75,8 @@ class AssistantService : Service() {
             val voiceLoop = VoiceLoop(this, created, scope) { agent.handle(it) }
             loop = voiceLoop
             AssistantRuntime.status.value = "Ready"
+            // The AI model takes a while to load, so it loads now instead of on your first request.
+            scope.launch { GemmaEngine.preload(this@AssistantService) }
             voiceLoop.run()
         } catch (e: CancellationException) {
             throw e

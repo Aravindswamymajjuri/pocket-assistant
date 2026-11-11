@@ -45,6 +45,8 @@ import dev.aravind.assistant.policy.WakeName
 import dev.aravind.assistant.policy.WakeSensitivity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -209,7 +211,7 @@ class VoiceEngines(context: Context) {
                     tokens = "$root/$folder/tokens.txt",
                     dataDir = "$root/piper/espeak-ng-data",
                 ),
-                numThreads = 2,
+                numThreads = 4,
             ),
         ),
     )
@@ -996,13 +998,32 @@ class VoiceLoop(
 class VoiceOutput(private val engines: VoiceEngines, private val loop: () -> VoiceLoop?) {
     private val mutex = Mutex()
 
-    /** Returns false if Piper couldn't speak, so the caller can use the fallback voice. */
+    /**
+     * Returns false if Piper couldn't speak, so the caller can use the fallback voice.
+     * Speaking starts as soon as the first sentence is ready. The next sentences are made while it plays,
+     * instead of waiting for the whole reply to be generated first.
+     */
     suspend fun say(text: String): Boolean = mutex.withLock {
         withContext(Dispatchers.Default) {
             loop()?.speaking = true
             try {
-                val audio = engines.synthesize(text)
-                play(audio.samples, audio.sampleRate)
+                val parts = sentences(text)
+                val first = engines.synthesize(parts.first())
+                val queue = Channel<FloatArray>(capacity = 2)
+                coroutineScope {
+                    launch {
+                        try {
+                            queue.send(first.samples)
+                            for (part in parts.drop(1)) {
+                                if (!AssistantRuntime.armed.value) break
+                                queue.send(engines.synthesize(part).samples)
+                            }
+                        } finally {
+                            queue.close()
+                        }
+                    }
+                    playAll(queue, first.sampleRate)
+                }
                 true
             } catch (e: Exception) {
                 false
@@ -1015,8 +1036,17 @@ class VoiceOutput(private val engines: VoiceEngines, private val loop: () -> Voi
         }
     }
 
-    private fun play(samples: FloatArray, rate: Int) {
-        if (samples.isEmpty()) return
+    /** Splits a reply into sentences, joining very short ones so the voice doesn't sound choppy. */
+    private fun sentences(text: String): List<String> {
+        val out = ArrayList<String>()
+        for (piece in text.trim().split(Regex("(?<=[.!?])\\s+"))) {
+            if (piece.isBlank()) continue
+            if (out.isNotEmpty() && out.last().length < 40) out[out.lastIndex] = out.last() + " " + piece else out += piece
+        }
+        return out.ifEmpty { listOf(text) }
+    }
+
+    private suspend fun playAll(queue: Channel<FloatArray>, rate: Int) {
         val format = AudioFormat.Builder()
             .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
             .setSampleRate(rate)
@@ -1034,11 +1064,13 @@ class VoiceOutput(private val engines: VoiceEngines, private val loop: () -> Voi
             .build()
         try {
             track.play()
-            var offset = 0
-            while (offset < samples.size && AssistantRuntime.armed.value) {
-                val written = track.write(samples, offset, minOf(4096, samples.size - offset), AudioTrack.WRITE_BLOCKING)
-                if (written <= 0) break
-                offset += written
+            for (samples in queue) {
+                var offset = 0
+                while (offset < samples.size && AssistantRuntime.armed.value) {
+                    val written = track.write(samples, offset, minOf(4096, samples.size - offset), AudioTrack.WRITE_BLOCKING)
+                    if (written <= 0) break
+                    offset += written
+                }
             }
             Thread.sleep(150)
             track.stop()

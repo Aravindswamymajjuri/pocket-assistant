@@ -228,6 +228,7 @@ object CommandRouter {
             return "speakerphone" to mapOf("on" to false)
         }
         music(t)?.let { return it }
+        lookup(t)?.let { return it }
         find("(?:search|google|look up|find)(?: on google| in google)?(?: for| about)? (.+?)(?: on google| in google| on the internet| on internet| online| on the web)?")?.let {
             return "web_search" to mapOf("query" to it[1], "site" to "google")
         }
@@ -243,6 +244,8 @@ object CommandRouter {
     /** Music commands that need no thinking: play, pause, resume, skip, previous, stop. */
     private fun music(t: String): Pair<String, Map<String, Any?>>? {
         fun find(pattern: String) = Regex(pattern, RegexOption.IGNORE_CASE).matchEntire(t)?.groupValues
+        // Music in a named app is left to that app, not the phone's own songs.
+        if (Regex("(?i)\\b(?:you ?tube|spotify|gaana|saavn|wynk|apple music|amazon music)\\b").containsMatchIn(t)) return null
         val control = when {
             find("pause(?: (?:the )?(?:music|song|songs|it))?") != null -> "pause"
             find("stop (?:the )?(?:music|song|songs|playing)") != null -> "stop"
@@ -257,6 +260,42 @@ object CommandRouter {
             return "play_music" to mapOf("query" to it[1])
         }
         find("play (?:the )?song (.+)")?.let { return "play_music" to mapOf("query" to it[1]) }
+        return null
+    }
+
+    /** Common questions about the phone, answered straight from the phone without the AI. */
+    private fun lookup(t: String): Pair<String, Map<String, Any?>>? {
+        fun find(pattern: String) = Regex(pattern, RegexOption.IGNORE_CASE).matchEntire(t)?.groupValues
+        if (find(
+                "(?:what(?:'s| is) )?(?:my |the )?(?:phone'?s? )?(?:battery|charge|charging|storage)(?: level| percentage| percent| status| left| space)?" +
+                    "|how much (?:battery|charge|storage)(?: space)?(?: is left| do i have| have i got| left)?" +
+                    "|(?:check|show)(?: me)? (?:my |the )?(?:battery|storage|phone status)|phone status",
+            ) != null
+        ) {
+            return "phone_status" to emptyMap()
+        }
+        if (find(
+                "(?:show|read|check|tell)?(?: me)?(?: my| the)? ?(?:missed|recent) calls|who (?:called|phoned|rang) me(?: today)?" +
+                    "|(?:any|did i get any|do i have any|did i miss any) (?:missed )?calls",
+            ) != null
+        ) {
+            return "recent_calls" to emptyMap()
+        }
+        find("(?:read|show|check)(?: me)?(?: my)?(?: new| latest| recent| last)? (?:messages|sms|texts)(?: from (.+))?")?.let {
+            return "recent_messages" to (if (it[1].isBlank()) emptyMap() else mapOf("contact" to it[1]))
+        }
+        find(
+            "(?:what(?:'s| is) )?(?:on )?(?:my )?(?:calendar|schedule|agenda|events|meetings)(?: for)?( today| tomorrow| this week)?" +
+                "|(?:do i have|have i got|are there) (?:any )?(?:meetings|events)( today| tomorrow| this week)?",
+        )?.let {
+            val days = when ((it.getOrNull(1).orEmpty() + it.getOrNull(2).orEmpty()).trim().lowercase()) {
+                "tomorrow" -> 2L
+                "this week" -> 7L
+                else -> 1L
+            }
+            return "calendar_events" to mapOf("days" to days)
+        }
+        if (find("take (?:a |my )?(?:photo|picture|pic|selfie|snap)") != null) return "take_photo" to emptyMap()
         return null
     }
 

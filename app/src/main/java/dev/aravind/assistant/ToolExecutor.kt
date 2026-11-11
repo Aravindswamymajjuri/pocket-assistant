@@ -233,7 +233,8 @@ class ToolExecutor(private val context: Context) {
         repeat(12) {
             delay(250)
             if (flip(service)) {
-                delay(1500)
+                // Goes back as soon as the switch changes, instead of always waiting a second and a half.
+                repeat(10) { if (isOn() != on) delay(150) }
                 service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
                 return if (isOn() == on) "$name ${if (on) "on" else "off"}" else "I tried, but please check $name"
             }
@@ -307,7 +308,8 @@ class ToolExecutor(private val context: Context) {
         if (isOn() == on) return "$name is already ${onOff(on)}"
         val service = AutomationService.instance ?: return "Turn on the Accessibility Service for Pocket Assistant first"
         service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)
-        delay(1000)
+        // Waits only until the tiles show, up to a second.
+        repeat(5) { if (service.findTile(labels) == null) delay(200) }
         var close = true
         try {
             repeat(4) {
@@ -317,7 +319,7 @@ class ToolExecutor(private val context: Context) {
                     if (before == on) return "$name is already ${onOff(on)}"
                     if (!service.pressTile(tile)) return "I found $name but couldn't tap it"
                     close = closeAfter
-                    delay(1200)
+                    repeat(8) { if (isOn() != on) delay(150) }
                     val after = isOn() ?: service.findTile(labels)?.let(service::tileState)
                     return when (after) {
                         on -> "$name ${onOff(on)}"
@@ -606,10 +608,10 @@ class ToolExecutor(private val context: Context) {
         repeat(20) {
             delay(250)
             if (service.targetPackage() == section.packageName) {
-                delay(900)
-                repeat(4) {
+                delay(400)
+                repeat(8) {
                     if (section.tab.any { tab -> service.tap(tab) }) return "Opened ${section.tab.first()} in ${section.app}"
-                    delay(500)
+                    delay(300)
                 }
                 return "I opened ${section.app}, but couldn't find ${section.tab.first()}"
             }
@@ -705,7 +707,7 @@ class ToolExecutor(private val context: Context) {
                     done += "went back"
                 }
             }
-            delay(1500)
+            delay(1000)
         }
         return "I tried ${ScreenAgent.MAX_STEPS} steps but didn't finish. Please check the screen"
     }

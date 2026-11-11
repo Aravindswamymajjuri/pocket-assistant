@@ -620,6 +620,7 @@ class SecurityTest {
         assertEquals("stop", CommandRouter.route("stop the music")?.text("action"))
         assertFalse(CommandRouter.isStop("stop the music"))
         assertEquals(Tool.WEB_SEARCH, CommandRouter.route("play relaxing songs on youtube")?.tool)
+        assertFalse(CommandRouter.route("play songs on spotify")?.tool == Tool.PLAY_MUSIC)
         assertEquals(listOf("call daddy", "turn on speaker"), CommandRouter.steps("call daddy on speaker"))
         assertEquals(Tool.SPEAKERPHONE, CommandRouter.route("turn on speaker")?.tool)
         assertEquals(Tool.SPEAKERPHONE, CommandRouter.route("put the call on speaker")?.tool)
@@ -641,5 +642,30 @@ class SecurityTest {
         val output = ModelOutputParser.parse("""{"tool":"play_music","args":{"query":"darling"},"final":true}""")
         assertTrue(output is ModelOutput.Call && output.final)
         assertTrue(ModelOutputParser.parse("""{"tool":"play_music","args":{},"final":"yes"}""") is ModelOutput.Invalid)
+    }
+
+    @Test fun laterStepsOnlySendWhatIsNew() {
+        val memory = AgentMemory("play darling songs")
+        memory.prompt()
+        memory.record(call("search_music", "query" to "darling"), "3 songs")
+        val first = memory.newSteps()
+        assertTrue("1. search_music(query=darling) -> 3 songs" in first)
+        memory.record(call("play_music", "query" to "darling"), "Playing")
+        val second = memory.newSteps()
+        assertFalse("search_music" in second)
+        assertTrue("2. play_music" in second)
+    }
+
+    @Test fun commonQuestionsNeedNoThinking() {
+        assertEquals(Tool.PHONE_STATUS, CommandRouter.route("what's my battery level")?.tool)
+        assertEquals(Tool.PHONE_STATUS, CommandRouter.route("how much storage is left")?.tool)
+        assertEquals(Tool.RECENT_CALLS, CommandRouter.route("show my missed calls")?.tool)
+        assertEquals(Tool.RECENT_CALLS, CommandRouter.route("who called me today")?.tool)
+        assertEquals("ravi", CommandRouter.route("read my messages from Ravi")?.text("contact")?.lowercase())
+        assertEquals(Tool.RECENT_MESSAGES, CommandRouter.route("check my messages")?.tool)
+        assertEquals(2L, CommandRouter.route("what's on my calendar tomorrow")?.long("days"))
+        assertEquals(1L, CommandRouter.route("do I have any meetings today")?.long("days"))
+        assertEquals(Tool.TAKE_PHOTO, CommandRouter.route("take a selfie")?.tool)
+        assertEquals(Tool.READ_NOTIFICATIONS, CommandRouter.route("read my notifications")?.tool)
     }
 }

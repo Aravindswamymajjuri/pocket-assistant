@@ -22,8 +22,10 @@ import dev.aravind.assistant.policy.ToolSelector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 class Agent(
@@ -98,7 +100,7 @@ class Agent(
                 last = run(call, utterance, heard.verified, tainted) ?: return "Not done"
                 // After reading notifications or the screen, untrusted text has been seen.
                 if (call.tool in READS_UNTRUSTED) tainted = true
-                if (routed.size > 1) delay(700)
+                if (routed.size > 1) delay(if (call.tool == Tool.OPEN_APP || call.tool == Tool.PLACE_CALL) 700 else 300)
             }
             return last
         }
@@ -110,7 +112,17 @@ class Agent(
      * done. Every action still goes through the same safety checks and approvals as a spoken command.
      */
     private suspend fun think(request: String, heard: Heard, limits: TaskLimits): String {
+        val chat = GemmaEngine.startTask()
+        try {
+            return thinkWith(chat, request, heard, limits)
+        } finally {
+            withContext(NonCancellable) { chat.close() }
+        }
+    }
+
+    private suspend fun thinkWith(chat: GemmaEngine.AgentChat, request: String, heard: Heard, limits: TaskLimits): String {
         val memory = AgentMemory(request)
+        val offered = ToolSelector.relevant(request)
         var tainted = false
         var lastResult = ""
         while (AssistantRuntime.isActive()) {
@@ -120,7 +132,7 @@ class Agent(
             AssistantRuntime.status.value = "Thinking"
             val thinkStart = System.currentTimeMillis()
             val raw = try {
-                GemmaEngine.agentStep(context, memory.prompt(), ToolSelector.relevant(request))
+                chat.step(context, memory, offered)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: IllegalStateException) {
@@ -263,7 +275,7 @@ class Agent(
         // The wake screen must be gone before reading or touching the app underneath it.
         if (call.tool !in KEEPS_WAKE_SCREEN && WakeUi.visible) {
             WakeUi.close()
-            delay(600)
+            delay(350)
         }
         val foreground = AutomationService.instance?.targetPackage() ?: AutomationService.foregroundPackage
         val policy = PolicyContext(
