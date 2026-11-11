@@ -104,7 +104,8 @@ object PolicyEngine {
     fun evaluate(call: ToolCall, ctx: PolicyContext): Decision {
         if (!ctx.armed) return Decision.Deny("Assistant is off")
         if (ctx.source != Source.LIVE_USER) return Decision.Deny("Only a live command from you can start an action")
-        if (ctx.inPhoneCall) return Decision.Deny("Phone actions are disabled during a call")
+        // During a call only the speakerphone can be switched, so a caller can't make the assistant do anything else.
+        if (ctx.inPhoneCall && call.tool != Tool.SPEAKERPHONE) return Decision.Deny("Phone actions are disabled during a call")
         if (!ctx.gateEnabled(call.tool.category)) return Decision.Deny("This tool category is turned off")
         if (call.tool.risk >= Risk.L3_SECURITY) return Decision.Deny("Do this manually")
 

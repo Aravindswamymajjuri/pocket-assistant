@@ -170,6 +170,10 @@ enum class Tool(
         "delete_event", Risk.L2_OUTBOUND, Category.SYSTEM,
         mapOf("id" to IntParam(1, Long.MAX_VALUE)), "Delete a calendar event by the id shown by calendar_events",
     ),
+    SPEAKERPHONE(
+        "speakerphone", Risk.L0_SAFE, Category.CALLS,
+        mapOf("on" to BoolParam()), "Turn the speakerphone on or off for the current call",
+    ),
     CALL_CONTROL(
         "call_control", Risk.L0_SAFE, Category.CALLS,
         mapOf("action" to ChoiceParam(setOf("answer", "reject"))), "Answer or reject the call that is ringing now",
@@ -236,6 +240,54 @@ object AppSections {
         "whatsapp_status" to AppSection("WhatsApp", "com.whatsapp", listOf("Updates", "Status")),
         "whatsapp_calls" to AppSection("WhatsApp", "com.whatsapp", listOf("Calls")),
     )
+}
+
+/**
+ * Picks the tools that matter for a request, so the AI reads a short list and answers faster.
+ * If nothing matches, every tool is included.
+ */
+object ToolSelector {
+    private val core = setOf(
+        Tool.OPEN_APP, Tool.SCREEN_TASK, Tool.READ_SCREEN, Tool.TAP_TEXT, Tool.ENTER_TEXT, Tool.GO_BACK, Tool.GO_HOME,
+        Tool.SCROLL, Tool.WEB_ANSWER, Tool.PHONE_STATUS,
+    )
+
+    private val groups: List<Pair<Regex, Set<Tool>>> = listOf(
+        "play|song|songs|music|album|artist|pause|resume|skip|next|previous|track" to setOf(
+            Tool.PLAY_MUSIC, Tool.SEARCH_MUSIC, Tool.MEDIA_CONTROL, Tool.VOLUME, Tool.WEB_SEARCH, Tool.APP_SECTION,
+        ),
+        "call|phone|ring|dial|speaker|answer|reject|missed|contact|number" to setOf(
+            Tool.PLACE_CALL, Tool.SPEAKERPHONE, Tool.CALL_CONTROL, Tool.FIND_CONTACT, Tool.RECENT_CALLS,
+        ),
+        "message|messages|msg|text|sms|whatsapp|chat|reply|send|notification|notifications" to setOf(
+            Tool.SEND_SMS, Tool.SEND_WHATSAPP, Tool.OPEN_CHAT, Tool.RECENT_MESSAGES, Tool.READ_NOTIFICATIONS, Tool.FIND_CONTACT,
+        ),
+        "file|files|pdf|document|documents|notes|share|rename|move|folder|download|downloads|summari[sz]e|assignment" to setOf(
+            Tool.SEARCH_FILES, Tool.OPEN_FILE, Tool.READ_DOCUMENT, Tool.SHARE_FILE, Tool.RENAME_FILE, Tool.MOVE_FILE,
+        ),
+        "photo|photos|picture|pictures|video|videos|camera|selfie|gallery|record" to setOf(
+            Tool.FIND_MEDIA, Tool.OPEN_CAMERA, Tool.TAKE_PHOTO, Tool.RECORD_VIDEO, Tool.OPEN_FILE, Tool.SHARE_FILE,
+        ),
+        "calendar|event|events|meeting|remind|reminder|alarm|timer|schedule|tomorrow|today" to setOf(
+            Tool.CALENDAR_EVENTS, Tool.CREATE_EVENT, Tool.CREATE_REMINDER, Tool.DELETE_EVENT, Tool.SET_ALARM, Tool.SET_TIMER,
+        ),
+        "wi-?fi|bluetooth|volume|brightness|data|hotspot|silent|vibrate|ring|disturb|dnd|battery|flash|torch|lock|" +
+            "airplane|aeroplane|location|dark|rotate|storage|setting|settings" to setOf(
+            Tool.WIFI, Tool.BLUETOOTH, Tool.MOBILE_DATA, Tool.VOLUME, Tool.BRIGHTNESS, Tool.QUICK_TOGGLE, Tool.RINGER_MODE,
+            Tool.DO_NOT_DISTURB, Tool.LOCK_PHONE, Tool.FLASHLIGHT,
+        ),
+        "search|google|youtube|website|site|browser|news|weather|score|price|who|what|when|where|how" to setOf(
+            Tool.WEB_SEARCH, Tool.WEB_ANSWER, Tool.OPEN_WEBSITE,
+        ),
+        "app|apps|installed|open|recent|switch" to setOf(Tool.LIST_APPS, Tool.RECENT_APPS, Tool.APP_SECTION, Tool.LONG_PRESS),
+        "remember|forget|memory" to setOf(Tool.REMEMBER, Tool.FORGET),
+    ).map { Regex("(?i)\\b(?:${it.first})\\b") to it.second }
+
+    fun relevant(request: String): List<Tool> {
+        val picked = groups.filter { it.first.containsMatchIn(request) }.flatMap { it.second }.toSet()
+        if (picked.isEmpty()) return Tool.entries
+        return Tool.entries.filter { it in core || it in picked }
+    }
 }
 
 data class ToolCall(val tool: Tool, val args: Map<String, Any>) {

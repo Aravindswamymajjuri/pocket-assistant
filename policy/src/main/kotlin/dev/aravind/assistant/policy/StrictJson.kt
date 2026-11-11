@@ -144,7 +144,8 @@ sealed interface ModelOutput {
 
     /** A short question back to the user when the request is unclear. */
     data class Ask(val question: String) : ModelOutput
-    data class Call(val call: ToolCall) : ModelOutput
+    /** [final] means this step completes the request, so its result is told to you without thinking again. */
+    data class Call(val call: ToolCall, val final: Boolean = false) : ModelOutput
     data class Plan(val calls: List<ToolCall>) : ModelOutput
     data class Invalid(val reason: String) : ModelOutput
 }
@@ -199,8 +200,10 @@ object ModelOutputParser {
             }
             return ModelOutput.Plan(calls)
         }
-        return when (val v = callFrom(obj)) {
-            is Validated.Ok -> ModelOutput.Call(v.call)
+        val final = obj["final"]
+        if (final != null && final !is Boolean) return ModelOutput.Invalid("final must be true or false")
+        return when (val v = callFrom(obj - "final")) {
+            is Validated.Ok -> ModelOutput.Call(v.call, final == true)
             is Validated.Rejected -> ModelOutput.Invalid(v.reason)
         }
     }

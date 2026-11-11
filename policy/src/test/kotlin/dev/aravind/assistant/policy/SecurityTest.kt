@@ -611,4 +611,35 @@ class SecurityTest {
         val google = CommandRouter.steps("open YouTube and search on google for Java")
         assertEquals("google", CommandRouter.inContext(google, google.map { CommandRouter.route(it) })[1]?.args?.get("site"))
     }
+
+    @Test fun musicAndSpeakerNeedNoThinking() {
+        assertEquals("darling movie", CommandRouter.route("Play Darling movie songs")?.text("query")?.lowercase())
+        assertEquals(Tool.PLAY_MUSIC, CommandRouter.route("play some music")?.tool)
+        assertEquals("next", CommandRouter.route("next song")?.text("action"))
+        assertEquals("pause", CommandRouter.route("pause the music")?.text("action"))
+        assertEquals("stop", CommandRouter.route("stop the music")?.text("action"))
+        assertFalse(CommandRouter.isStop("stop the music"))
+        assertEquals(Tool.WEB_SEARCH, CommandRouter.route("play relaxing songs on youtube")?.tool)
+        assertEquals(listOf("call daddy", "turn on speaker"), CommandRouter.steps("call daddy on speaker"))
+        assertEquals(Tool.SPEAKERPHONE, CommandRouter.route("turn on speaker")?.tool)
+        assertEquals(Tool.SPEAKERPHONE, CommandRouter.route("put the call on speaker")?.tool)
+        assertEquals(false, CommandRouter.route("turn off speaker")?.bool("on"))
+        assertTrue(PolicyEngine.evaluate(call("speakerphone", "on" to true), ctx.copy(inPhoneCall = true)) is Decision.Allow)
+        assertTrue(PolicyEngine.evaluate(call("open_app", "name" to "WhatsApp"), ctx.copy(inPhoneCall = true)) is Decision.Deny)
+    }
+
+    @Test fun onlyRelevantToolsAreSentToTheAi() {
+        val music = ToolSelector.relevant("play darling songs")
+        assertTrue(Tool.PLAY_MUSIC in music)
+        assertFalse(Tool.RENAME_FILE in music)
+        assertTrue(Tool.OPEN_APP in music)
+        assertTrue(ToolSelector.relevant("xyzzy").size == Tool.entries.size)
+        assertTrue(ToolSelector.relevant("find my notes and share them").containsAll(listOf(Tool.SEARCH_FILES, Tool.SHARE_FILE)))
+    }
+
+    @Test fun aiCanMarkItsLastStep() {
+        val output = ModelOutputParser.parse("""{"tool":"play_music","args":{"query":"darling"},"final":true}""")
+        assertTrue(output is ModelOutput.Call && output.final)
+        assertTrue(ModelOutputParser.parse("""{"tool":"play_music","args":{},"final":"yes"}""") is ModelOutput.Invalid)
+    }
 }

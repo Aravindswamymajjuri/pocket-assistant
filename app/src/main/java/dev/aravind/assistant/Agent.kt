@@ -18,6 +18,7 @@ import dev.aravind.assistant.policy.Source
 import dev.aravind.assistant.policy.TaskLimits
 import dev.aravind.assistant.policy.Tool
 import dev.aravind.assistant.policy.ToolCall
+import dev.aravind.assistant.policy.ToolSelector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -81,6 +82,15 @@ class Agent(
 
         // Known commands run straight away. Anything else goes to Gemma, which works it out step by step.
         if (routed.all { it != null }) {
+            // "Play X songs" is tried on the phone's own music first. If none match, the AI works out another way,
+            // like YouTube or a music app.
+            val only = routed.singleOrNull()
+            if (only?.tool == Tool.PLAY_MUSIC && only.args["query"] != null) {
+                val result = run(only, utterance, heard.verified, tainted, speakResult = false) ?: return "Not done"
+                if (!result.startsWith("No songs")) return finish(result)
+                AssistantRuntime.note("Found: $result")
+                return think(utterance, heard, limits)
+            }
             var last = "Done"
             for (call in routed.filterNotNull()) {
                 if (!AssistantRuntime.isActive()) return "Stopped"
@@ -108,8 +118,9 @@ class Agent(
                 return finish("I did ${memory.stepsDone} steps but couldn't finish. ${lastResult.take(120)}".trim())
             }
             AssistantRuntime.status.value = "Thinking"
+            val thinkStart = System.currentTimeMillis()
             val raw = try {
-                GemmaEngine.agentStep(context, memory.prompt())
+                GemmaEngine.agentStep(context, memory.prompt(), ToolSelector.relevant(request))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: IllegalStateException) {
@@ -119,8 +130,9 @@ class Agent(
                 return finish("The AI model couldn't run. I can still do simple commands")
             }
             val (thought, output) = ModelOutputParser.parseWithThought(raw)
-            thought?.let { AssistantRuntime.note("Thinking: $it") }
-            val call = when (output) {
+            val seconds = (System.currentTimeMillis() - thinkStart) / 100 / 10.0
+            AssistantRuntime.note("Thinking: ${thought ?: "decided"} (${seconds}s)")
+            val calls = when (output) {
                 is ModelOutput.Reply -> {
                     // Before any step, a reply that claims an action is false, because nothing was done.
                     if (memory.stepsDone == 0 && ReplyGuard.isFalseActionClaim(request, output.text)) {
@@ -147,21 +159,44 @@ class Agent(
                     Audit.log(context, "model_output_rejected")
                     return finish(if (memory.stepsDone == 0) "I couldn't work out a safe action for that" else lastResult.ifBlank { "Done" })
                 }
-                is ModelOutput.Call -> output.call
-                is ModelOutput.Plan -> output.calls.first()
+                is ModelOutput.Call -> listOf(output.call)
+                is ModelOutput.Plan -> output.calls
             }
-            if (!memory.allow(call)) return finish(lastResult.ifBlank { "I was going in circles, so I stopped" })
-            AssistantRuntime.note("Doing: ${doing(call)}")
-            val result = run(call, request, heard.verified, tainted, speakResult = false)
-            if (result == null) {
-                AssistantRuntime.note("Stopped")
-                return "Not done"
+            // A plan runs all its steps without thinking again in between, which saves a model call per step.
+            // It only goes back to thinking if a step fails or reads text the AI has to look at.
+            val results = ArrayList<String>()
+            var needsThought = false
+            for ((index, call) in calls.withIndex()) {
+                if (!AssistantRuntime.isActive()) return "Stopped"
+                if (index > 0 && !limits.tryStep()) return finish("That task took too long, so I stopped")
+                if (!memory.allow(call)) return finish(lastResult.ifBlank { "I was going in circles, so I stopped" })
+                AssistantRuntime.note("Doing: ${doing(call)}")
+                val started = System.currentTimeMillis()
+                val result = run(call, request, heard.verified, tainted, speakResult = false)
+                if (result == null) {
+                    AssistantRuntime.note("Stopped")
+                    return "Not done"
+                }
+                AssistantRuntime.note("Found: ${SecretRedactor.redact(result).take(160)} (${(System.currentTimeMillis() - started) / 100 / 10.0}s)")
+                if (call.tool in READS_UNTRUSTED) tainted = true
+                memory.record(call, result)
+                lastResult = result
+                results += result
+                if (FAILED.containsMatchIn(result) || call.tool in NEEDS_A_LOOK) {
+                    needsThought = true
+                    break
+                }
+                if (index < calls.lastIndex) delay(500)
             }
-            AssistantRuntime.note("Found: ${SecretRedactor.redact(result).take(160)}")
-            if (call.tool in READS_UNTRUSTED) tainted = true
-            memory.record(call, result)
-            lastResult = result
-            delay(400)
+            // When the AI said this was the last step, or a whole plan went through, the results are the answer.
+            val done = (output is ModelOutput.Call && output.final) || (output is ModelOutput.Plan && calls.size > 1)
+            if (done && !needsThought) {
+                val answer = results.joinToString(". ") { it.trim().trimEnd('.') }.take(300)
+                GemmaEngine.remember(request, answer)
+                AssistantRuntime.note("Answer: $answer")
+                return finish(answer)
+            }
+            delay(300)
         }
         return "Stopped"
     }
@@ -215,6 +250,7 @@ class Agent(
             Tool.CREATE_REMINDER -> "Setting a reminder: ${call.text("text")}"
             Tool.DELETE_EVENT -> "Deleting calendar event ${call.long("id")}"
             Tool.OPEN_WEBSITE -> "Opening ${call.text("url")}"
+            Tool.SPEAKERPHONE -> if (call.bool("on")) "Turning on the speaker" else "Turning off the speaker"
             Tool.ENTER_TEXT -> "Typing into the screen"
             Tool.REMEMBER -> "Saving to memory"
             Tool.FORGET -> "Removing from memory"
@@ -283,6 +319,13 @@ class Agent(
         // Text written by other people or websites. After reading it, sending or calling needs your fingerprint.
         val READS_UNTRUSTED = setOf(
             Tool.READ_NOTIFICATIONS, Tool.READ_SCREEN, Tool.SCREEN_TASK, Tool.WEB_ANSWER, Tool.RECENT_MESSAGES, Tool.CALENDAR_EVENTS,
+        )
+        // After these, the AI looks at the result before going on, because the next step depends on what it says.
+        val NEEDS_A_LOOK = READS_UNTRUSTED + Tool.READ_DOCUMENT
+        // Results that mean a step didn't work, so the AI thinks again instead of reporting it as done.
+        val FAILED = Regex(
+            "(?i)(?:couldn't|could not|can't|cannot|failed|not found|no call|wasn't|didn't|isn't (?:installed|allowed|on)|" +
+                "^no |allow .+ in settings|not allowed|turn on .+ first)",
         )
         val LONG_ANSWERS = setOf(
             Tool.READ_NOTIFICATIONS, Tool.READ_SCREEN, Tool.WEB_ANSWER, Tool.PHONE_STATUS, Tool.RECENT_CALLS, Tool.RECENT_MESSAGES,

@@ -26,6 +26,7 @@ object CommandRouter {
     private val boundary = Regex(
         "(?i)\\s*,\\s*(?:and\\s+)?(?:then\\s+)?(?=$VERBS\\b)|\\s+(?:and then|and|then|after that)\\s+(?=$VERBS\\b)",
     )
+    private val callOnSpeaker = Regex("(?i)^((?:make a call to|call|phone|dial|ring) .+?) (?:on|with|in) (?:the )?speaker(?: ?phone)?(?: mode)?$")
     private val messageStart = Regex("(?i)^(?:please )?(?:send|message|msg|text|whats ?app|sms|tell|write)\\b")
 
     fun isStop(text: String): Boolean {
@@ -47,7 +48,12 @@ object CommandRouter {
             start = match.range.last + 1
         }
         t.substring(start).trim().takeIf { it.isNotEmpty() }?.let { out += it }
-        return out.take(5)
+        // "Call Daddy on speaker" is a call, then the speakerphone.
+        val split = out.flatMap { part ->
+            val onSpeaker = callOnSpeaker.matchEntire(part)
+            if (onSpeaker != null) listOf(onSpeaker.groupValues[1], "turn on speaker") else listOf(part)
+        }
+        return split.take(5)
     }
 
     private val misheardTurn = Regex("(?i)^(?:please\\s+)?(?:turrent|turret|turned|turnt|torn|tern|term|tune|trun|ton)\\b")
@@ -214,6 +220,14 @@ object CommandRouter {
         alarm(t)?.let { return it }
         webQuestion(t)?.let { return "web_answer" to mapOf("query" to it) }
         find("(?:search|find|play)(?: for)? (.+?) (?:on|in) you ?tube")?.let { return "web_search" to mapOf("query" to it[1], "site" to "youtube") }
+        // Speakerphone and music run straight away, without the AI thinking.
+        find("(?:turn|switch|put) (?:the )?(?:call )?(?:on )?(?:to )?(?:the )?speaker(?: ?phone)?(?: mode)?(?: on)?|speaker(?: ?phone)? on")?.let {
+            return "speakerphone" to mapOf("on" to true)
+        }
+        find("(?:turn|switch) off (?:the )?speaker(?: ?phone)?|(?:turn |switch )?(?:the )?speaker(?: ?phone)? off")?.let {
+            return "speakerphone" to mapOf("on" to false)
+        }
+        music(t)?.let { return it }
         find("(?:search|google|look up|find)(?: on google| in google)?(?: for| about)? (.+?)(?: on google| in google| on the internet| on internet| online| on the web)?")?.let {
             return "web_search" to mapOf("query" to it[1], "site" to "google")
         }
@@ -223,6 +237,26 @@ object CommandRouter {
         find("(?:open|launch|start) (.+)")?.let { return "open_app" to mapOf("name" to it[1].removePrefix("the ")) }
         find("(?:tap|click|press|select|touch) (?:on )?(?:the )?(.+?)(?: button| option)?")?.let { return "tap_text" to mapOf("text" to it[1]) }
         find("(?:make a call to|give a call to|call to|call|phone|dial|ring)(?: to)? (?:my )?(.+)")?.let { return "place_call" to mapOf("to" to it[1]) }
+        return null
+    }
+
+    /** Music commands that need no thinking: play, pause, resume, skip, previous, stop. */
+    private fun music(t: String): Pair<String, Map<String, Any?>>? {
+        fun find(pattern: String) = Regex(pattern, RegexOption.IGNORE_CASE).matchEntire(t)?.groupValues
+        val control = when {
+            find("pause(?: (?:the )?(?:music|song|songs|it))?") != null -> "pause"
+            find("stop (?:the )?(?:music|song|songs|playing)") != null -> "stop"
+            find("(?:resume|continue|unpause)(?: (?:the )?(?:music|song|playing|it))?|play (?:the )?music again") != null -> "resume"
+            find("(?:next|skip)(?: (?:the|this))?(?: song| track)?|play (?:the )?next (?:song|track)") != null -> "next"
+            find("(?:previous|last) (?:song|track)|play (?:the )?previous (?:song|track)") != null -> "previous"
+            else -> null
+        }
+        if (control != null) return "media_control" to mapOf("action" to control)
+        if (find("play (?:some |my |all )?(?:music|songs)(?: (?:on|from|in) my phone)?") != null) return "play_music" to emptyMap()
+        find("play (?:all |some |my )?(?:the )?(.+?) (?:songs?|music|album)(?: (?:on|from|in) my phone)?")?.let {
+            return "play_music" to mapOf("query" to it[1])
+        }
+        find("play (?:the )?song (.+)")?.let { return "play_music" to mapOf("query" to it[1]) }
         return null
     }
 

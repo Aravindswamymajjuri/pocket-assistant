@@ -12,6 +12,17 @@
 
 Every tool call, whether from a rule or from Gemma, goes through the same policy checks.
 
+## Speed
+
+Gemma runs on the phone's CPU, so each thinking step takes several seconds. To keep tasks quick:
+
+- Common commands skip the AI entirely: "play Darling songs", "play music", "pause / next / previous / stop the music",
+  "turn on speaker", and "call Daddy on speaker" (a call, then the speaker).
+- The AI only sees the tools that fit the request, so its prompt is shorter and is read faster.
+- The AI can mark a step as the last one ("final"), or send a whole plan. Those run without another thinking round.
+- The steps panel shows how long each thinking step and each action took.
+- If your phone supports it, turn on the GPU option in Settings for faster thinking.
+
 ## Tools
 
 | Area | Tools |

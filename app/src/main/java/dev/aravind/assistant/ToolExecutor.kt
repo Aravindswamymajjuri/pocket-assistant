@@ -116,6 +116,7 @@ class ToolExecutor(private val context: Context) {
         )
         Tool.DELETE_EVENT -> phone.deleteEvent(call.long("id"))
         Tool.CALL_CONTROL -> phone.callControl(call.text("action"))
+        Tool.SPEAKERPHONE -> phone.speakerphone(call.bool("on"))
         Tool.REMEMBER -> phone.remember(call.text("fact"), utterance)
         Tool.FORGET -> phone.forget(call.text("fact"))
         Tool.OPEN_CHAT -> openChat(call.text("contact"), call.args["app"] as? String ?: "whatsapp")

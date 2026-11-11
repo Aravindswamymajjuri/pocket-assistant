@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
@@ -605,6 +606,45 @@ class PhoneTools(private val context: Context) {
     // ---- Calls, websites, apps, memory
 
     @Suppress("DEPRECATION")
+    /**
+     * Switches the speakerphone for the current call. It waits a few seconds for a call that is just starting,
+     * then uses the audio settings, and if the phone ignores them, taps the Speaker button in the call screen.
+     */
+    suspend fun speakerphone(on: Boolean): String {
+        val audio = context.getSystemService(AudioManager::class.java)
+        fun inCall() = audio.mode == AudioManager.MODE_IN_CALL || audio.mode == AudioManager.MODE_IN_COMMUNICATION
+        fun speakerOn(): Boolean {
+            @Suppress("DEPRECATION")
+            val old = audio.isSpeakerphoneOn
+            return old || audio.communicationDevice?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+        }
+        var waited = 0
+        while (!inCall() && waited < 8_000) {
+            delay(250)
+            waited += 250
+        }
+        if (!inCall()) return "No call is active, so the speaker wasn't changed"
+        if (speakerOn() == on) return if (on) "The speaker is on" else "The speaker is off"
+        if (on) {
+            audio.availableCommunicationDevices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                ?.let { audio.setCommunicationDevice(it) }
+        } else {
+            audio.clearCommunicationDevice()
+        }
+        @Suppress("DEPRECATION")
+        audio.isSpeakerphoneOn = on
+        delay(400)
+        if (speakerOn() == on) return if (on) "Turned on the speaker" else "Turned off the speaker"
+        // Some phones only let the call screen change it, so press its Speaker button.
+        val service = AutomationService.instance
+        if (service != null && service.tapAny(listOf("speaker", "speakerphone", "loudspeaker", "speaker on", "audio"))) {
+            delay(500)
+            if (speakerOn() == on) return if (on) "Turned on the speaker" else "Turned off the speaker"
+            return "Pressed the Speaker button"
+        }
+        return "I couldn't change the speaker. Tap Speaker on the call screen"
+    }
+
     fun callControl(action: String): String {
         if (!granted(Manifest.permission.ANSWER_PHONE_CALLS)) return "Allow Answer calls in Settings first"
         val audio = context.getSystemService(AudioManager::class.java)
