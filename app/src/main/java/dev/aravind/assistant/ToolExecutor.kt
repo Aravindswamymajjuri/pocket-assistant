@@ -7,6 +7,7 @@ import android.app.KeyguardManager
 import android.app.NotificationManager
 import android.bluetooth.BluetoothManager
 import android.content.ActivityNotFoundException
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -15,8 +16,14 @@ import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.BatteryManager
 import android.os.Build
+import android.os.Environment
+import android.os.StatFs
 import android.provider.AlarmClock
+import android.provider.CalendarContract
+import android.provider.CallLog
+import android.provider.Telephony
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.telephony.SmsManager
@@ -34,6 +41,10 @@ import dev.aravind.assistant.policy.Tool
 import dev.aravind.assistant.policy.ToolCall
 import kotlinx.coroutines.delay
 import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 /** Runs only calls the policy engine has already approved. It rechecks app and permission limits. */
 class ToolExecutor(private val context: Context) {
@@ -69,6 +80,12 @@ class ToolExecutor(private val context: Context) {
         Tool.SEND_WHATSAPP -> sendWhatsApp(call.text("to"), call.text("body"))
         Tool.PLACE_CALL -> placeCall(call.text("to"))
         Tool.WEB_ANSWER -> webAnswer(call.text("query"))
+        Tool.PHONE_STATUS -> phoneStatus()
+        Tool.FIND_CONTACT -> findContact(call.text("name"))
+        Tool.RECENT_CALLS -> recentCalls(call.args["contact"] as? String)
+        Tool.RECENT_MESSAGES -> recentMessages(call.args["contact"] as? String)
+        Tool.CALENDAR_EVENTS -> calendarEvents((call.args["days"] as? Long)?.toInt() ?: 1)
+        Tool.LIST_APPS -> listApps()
         Tool.OPEN_CHAT -> openChat(call.text("contact"), call.args["app"] as? String ?: "whatsapp")
         Tool.APP_SECTION -> appSection(AppSections.ALL.getValue(call.text("section")))
         Tool.READ_SCREEN -> readScreen(call.args["explain"] as? Boolean ?: false, utterance)
@@ -325,6 +342,146 @@ class ToolExecutor(private val context: Context) {
     private fun automation(block: (AutomationService) -> String): String {
         val service = AutomationService.instance ?: return "Turn on the Accessibility Service in Control Center first"
         return block(service)
+    }
+
+    // ---- Reading details from the phone, so the AI can answer questions and decide what to do next.
+
+    private fun whenText(millis: Long): String {
+        val then = Calendar.getInstance().apply { timeInMillis = millis }
+        val today = Calendar.getInstance()
+        val days = (today.get(Calendar.YEAR) - then.get(Calendar.YEAR)) * 365 + today.get(Calendar.DAY_OF_YEAR) - then.get(Calendar.DAY_OF_YEAR)
+        val day = when (days) {
+            0 -> "today"
+            1 -> "yesterday"
+            -1 -> "tomorrow"
+            else -> SimpleDateFormat("EEE d MMM", Locale.ENGLISH).format(Date(millis))
+        }
+        return "$day ${SimpleDateFormat("h:mm a", Locale.ENGLISH).format(Date(millis))}"
+    }
+
+    private fun onOff(value: Boolean?) = when (value) {
+        true -> "on"
+        false -> "off"
+        null -> "unknown"
+    }
+
+    private fun phoneStatus(): String {
+        val battery = context.getSystemService(BatteryManager::class.java)
+        val level = battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val stat = StatFs(Environment.getDataDirectory().path)
+        val wifi = runCatching { context.getSystemService(WifiManager::class.java).isWifiEnabled }.getOrNull()
+        val data = runCatching { context.getSystemService(TelephonyManager::class.java).isDataEnabled }.getOrNull()
+        val bluetooth = runCatching { context.getSystemService(BluetoothManager::class.java).adapter?.isEnabled }.getOrNull()
+        val sound = when (context.getSystemService(AudioManager::class.java).ringerMode) {
+            AudioManager.RINGER_MODE_SILENT -> "silent"
+            AudioManager.RINGER_MODE_VIBRATE -> "vibrate"
+            else -> "ring"
+        }
+        val dnd = context.getSystemService(NotificationManager::class.java).currentInterruptionFilter != NotificationManager.INTERRUPTION_FILTER_ALL
+        val alarm = context.getSystemService(AlarmManager::class.java).nextAlarmClock?.triggerTime
+        return "Battery $level%${if (battery.isCharging) ", charging" else ""}. " +
+            "Storage %.1f GB free of %.0f GB. ".format(stat.availableBytes / 1e9, stat.totalBytes / 1e9) +
+            "Wi-Fi ${onOff(wifi)}, mobile data ${onOff(data)}, Bluetooth ${onOff(bluetooth)}. " +
+            "Sound mode $sound, Do Not Disturb ${onOff(dnd)}. " +
+            "Now ${SimpleDateFormat("EEEE d MMMM yyyy, h:mm a", Locale.ENGLISH).format(Date())}. " +
+            "Next alarm: ${alarm?.let(::whenText) ?: "none"}."
+    }
+
+    private fun findContact(name: String): String {
+        if (!granted(Manifest.permission.READ_CONTACTS)) return "Allow the Contacts permission in Settings first"
+        val contacts = readContacts()
+        val matches = ContactMatcher.top(name, contacts.keys)
+        if (matches.isEmpty()) return "No contact matches $name"
+        return matches.take(3).joinToString("; ") { match -> "$match: ${contacts[match].orEmpty().joinToString(", ") { it.first }}" }
+    }
+
+    /** Last 10 digits of each saved number, so calls and messages can show names. */
+    private fun namesByNumber(): Map<String, String> =
+        readContacts().flatMap { (name, numbers) -> numbers.map { it.first.filter(Char::isDigit).takeLast(10) to name } }.toMap()
+
+    private fun wantedNumbers(contact: String?): Set<String>? {
+        if (contact.isNullOrBlank()) return null
+        val contacts = readContacts()
+        val match = ContactMatcher.top(contact, contacts.keys).firstOrNull() ?: return emptySet()
+        return contacts[match].orEmpty().map { it.first.filter(Char::isDigit).takeLast(10) }.toSet()
+    }
+
+    private fun recentCalls(contact: String?): String {
+        if (!granted(Manifest.permission.READ_CALL_LOG)) return "Allow the Call log permission in Settings first"
+        val names = namesByNumber()
+        val wanted = wantedNumbers(contact)
+        if (wanted != null && wanted.isEmpty()) return "No contact matches $contact"
+        val lines = ArrayList<String>()
+        val columns = arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.TYPE, CallLog.Calls.DATE, CallLog.Calls.DURATION)
+        context.contentResolver.query(CallLog.Calls.CONTENT_URI, columns, null, null, "${CallLog.Calls.DATE} DESC")?.use { cursor ->
+            while (cursor.moveToNext() && lines.size < 8) {
+                val number = cursor.getString(0).orEmpty()
+                val key = number.filter(Char::isDigit).takeLast(10)
+                if (wanted != null && key !in wanted) continue
+                val who = names[key] ?: number.ifBlank { "unknown number" }
+                val kind = when (cursor.getInt(1)) {
+                    CallLog.Calls.INCOMING_TYPE -> "Incoming call from"
+                    CallLog.Calls.OUTGOING_TYPE -> "Outgoing call to"
+                    CallLog.Calls.MISSED_TYPE -> "Missed call from"
+                    CallLog.Calls.REJECTED_TYPE -> "Rejected call from"
+                    else -> "Call with"
+                }
+                val minutes = cursor.getLong(3) / 60
+                lines += "$kind $who, ${whenText(cursor.getLong(2))}" + if (minutes > 0) " ($minutes min)" else ""
+            }
+        }
+        return if (lines.isEmpty()) "No recent calls" else lines.joinToString("; ")
+    }
+
+    private fun recentMessages(contact: String?): String {
+        if (!granted(Manifest.permission.READ_SMS)) return "Allow the Read SMS permission in Settings first"
+        val names = namesByNumber()
+        val wanted = wantedNumbers(contact)
+        if (wanted != null && wanted.isEmpty()) return "No contact matches $contact"
+        val lines = ArrayList<String>()
+        val columns = arrayOf(Telephony.Sms.ADDRESS, Telephony.Sms.BODY, Telephony.Sms.DATE)
+        context.contentResolver.query(Telephony.Sms.Inbox.CONTENT_URI, columns, null, null, "${Telephony.Sms.DATE} DESC")?.use { cursor ->
+            while (cursor.moveToNext() && lines.size < 5) {
+                val address = cursor.getString(0).orEmpty()
+                val key = address.filter(Char::isDigit).takeLast(10)
+                if (wanted != null && key !in wanted) continue
+                val who = names[key] ?: address
+                // Codes and passwords are hidden before anything sees the text.
+                val body = SecretRedactor.redact(cursor.getString(1).orEmpty()).replace(Regex("\\s+"), " ").take(120)
+                lines += "From $who, ${whenText(cursor.getLong(2))}: $body"
+            }
+        }
+        return if (lines.isEmpty()) "No messages found" else lines.joinToString("; ")
+    }
+
+    private fun calendarEvents(days: Int): String {
+        if (!granted(Manifest.permission.READ_CALENDAR)) return "Allow the Calendar permission in Settings first"
+        val start = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+        }.timeInMillis
+        val end = start + days.coerceIn(1, 7) * 86_400_000L
+        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().also {
+            ContentUris.appendId(it, start)
+            ContentUris.appendId(it, end)
+        }.build()
+        val columns = arrayOf(CalendarContract.Instances.TITLE, CalendarContract.Instances.BEGIN, CalendarContract.Instances.ALL_DAY)
+        val lines = ArrayList<String>()
+        context.contentResolver.query(uri, columns, null, null, "${CalendarContract.Instances.BEGIN} ASC")?.use { cursor ->
+            while (cursor.moveToNext() && lines.size < 8) {
+                val title = SecretRedactor.redact(cursor.getString(0).orEmpty()).take(80).ifBlank { "Untitled event" }
+                val time = if (cursor.getInt(2) == 1) "all day" else whenText(cursor.getLong(1))
+                lines += "$title, $time"
+            }
+        }
+        return if (lines.isEmpty()) "No events in the next $days day(s)" else lines.joinToString("; ")
+    }
+
+    private fun listApps(): String {
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val names = context.packageManager.queryIntentActivities(launcher, 0)
+            .map { it.loadLabel(context.packageManager).toString() }.distinct().sortedBy { it.lowercase() }
+        return "${names.size} apps: ${names.take(60).joinToString(", ")}"
     }
 
     private fun granted(permission: String) =

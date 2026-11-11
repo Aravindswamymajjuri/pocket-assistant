@@ -72,6 +72,24 @@ enum class Tool(
         "web_answer", Risk.L0_SAFE, Category.WEB, mapOf("query" to TextParam(200)),
         "Look up something current on Google, like match results, news, weather, or prices, and say the answer",
     ),
+    PHONE_STATUS(
+        "phone_status", Risk.L0_SAFE, Category.SYSTEM,
+        description = "Check battery, storage, Wi-Fi, mobile data, Bluetooth, sound mode, date and time, and the next alarm",
+    ),
+    FIND_CONTACT("find_contact", Risk.L0_SAFE, Category.CALLS, mapOf("name" to TextParam(60)), "Look up a contact's phone number"),
+    RECENT_CALLS(
+        "recent_calls", Risk.L0_SAFE, Category.CALLS,
+        mapOf("contact" to TextParam(60, required = false)), "List recent calls, optionally only with one contact",
+    ),
+    RECENT_MESSAGES(
+        "recent_messages", Risk.L0_SAFE, Category.MESSAGES,
+        mapOf("contact" to TextParam(60, required = false)), "Read recent SMS messages, optionally only from one contact. Codes are hidden",
+    ),
+    CALENDAR_EVENTS(
+        "calendar_events", Risk.L0_SAFE, Category.SYSTEM,
+        mapOf("days" to IntParam(1, 7, required = false)), "List calendar events for today and the next few days",
+    ),
+    LIST_APPS("list_apps", Risk.L0_SAFE, Category.APPS, description = "List the apps installed on the phone"),
     OPEN_CHAT(
         "open_chat", Risk.L0_SAFE, Category.MESSAGES,
         mapOf("contact" to TextParam(60), "app" to ChoiceParam(setOf("whatsapp", "sms"), required = false)),

@@ -37,6 +37,13 @@ object AssistantRuntime {
     /** Words recognized so far while you're still speaking. */
     val partial = MutableStateFlow("")
 
+    /** The steps of the current task: what the AI is thinking, doing, and finding. Shown on screen. */
+    val agentSteps = MutableStateFlow<List<String>>(emptyList())
+
+    fun note(step: String) {
+        agentSteps.value = (agentSteps.value + step).takeLast(14)
+    }
+
     /** The microphone's format, and whether any audio was lost, shown in Settings. */
     val micInfo = MutableStateFlow("")
 

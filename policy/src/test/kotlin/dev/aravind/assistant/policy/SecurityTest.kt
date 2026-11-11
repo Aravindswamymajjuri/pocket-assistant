@@ -554,4 +554,17 @@ class SecurityTest {
         assertFalse(memory.canContinue())
         assertTrue(memory.prompt().lines().all { it.length < 400 })
     }
+
+    @Test fun thoughtsAreShownButCantChangeTheAction() {
+        val (thought, output) = ModelOutputParser.parseWithThought(
+            """{"thought":"I need the battery level first","tool":"phone_status","args":{}}""",
+        )
+        assertEquals("I need the battery level first", thought)
+        assertEquals(Tool.PHONE_STATUS, (output as ModelOutput.Call).call.tool)
+        val (hidden, _) = ModelOutputParser.parseWithThought("""{"thought":"Your OTP is 482913","reply":"Done"}""")
+        assertFalse(hidden.orEmpty().contains("482913"))
+        assertTrue(ModelOutputParser.parseWithThought("""{"thought":5,"reply":"Done"}""").second is ModelOutput.Invalid)
+        assertTrue(ModelOutputParser.parse("""{"tool":"phone_status","args":{},"extra":1}""") is ModelOutput.Invalid)
+        assertEquals(Tool.RECENT_MESSAGES, (ModelOutputParser.parse("""{"tool":"recent_messages","args":{"contact":"Daddy"}}""") as ModelOutput.Call).call.tool)
+    }
 }

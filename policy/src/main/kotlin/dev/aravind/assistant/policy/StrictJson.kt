@@ -148,15 +148,31 @@ sealed interface ModelOutput {
 
 /** The model must output a reply, one tool call, or a plan of at most five calls. Anything else is rejected. */
 object ModelOutputParser {
-    fun parse(raw: String): ModelOutput {
+    fun parse(raw: String): ModelOutput = parseWithThought(raw).second
+
+    /**
+     * Also returns the AI's optional "thought": one short sentence about what it's doing, shown on screen.
+     * The thought is only displayed. It can't change which action runs, and codes in it are hidden.
+     */
+    fun parseWithThought(raw: String): Pair<String?, ModelOutput> {
         val text = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
         val root = try {
             StrictJson.parse(text)
         } catch (e: JsonRejected) {
-            return ModelOutput.Invalid(e.message ?: "invalid JSON")
+            return null to ModelOutput.Invalid(e.message ?: "invalid JSON")
         }
         @Suppress("UNCHECKED_CAST")
-        val obj = root as? Map<String, Any?> ?: return ModelOutput.Invalid("not an object")
+        val obj = root as? Map<String, Any?> ?: return null to ModelOutput.Invalid("not an object")
+        val rawThought = obj["thought"]
+        if (rawThought != null && rawThought !is String) return null to ModelOutput.Invalid("thought must be text")
+        val thought = (rawThought as String?)
+            ?.filter { !it.isISOControl() }?.let(SecretRedactor::redact)?.trim()?.take(MAX_THOUGHT)?.takeIf { it.isNotEmpty() }
+        return thought to fromObject(obj - "thought")
+    }
+
+    private const val MAX_THOUGHT = 160
+
+    private fun fromObject(obj: Map<String, Any?>): ModelOutput {
         if (obj.keys == setOf("reply")) {
             val reply = obj["reply"] as? String ?: return ModelOutput.Invalid("reply must be text")
             return ModelOutput.Reply(reply)

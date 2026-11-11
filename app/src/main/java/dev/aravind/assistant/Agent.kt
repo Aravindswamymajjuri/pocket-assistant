@@ -13,6 +13,7 @@ import dev.aravind.assistant.policy.ModelOutputParser
 import dev.aravind.assistant.policy.PolicyContext
 import dev.aravind.assistant.policy.PolicyEngine
 import dev.aravind.assistant.policy.ReplyGuard
+import dev.aravind.assistant.policy.SecretRedactor
 import dev.aravind.assistant.policy.Source
 import dev.aravind.assistant.policy.TaskLimits
 import dev.aravind.assistant.policy.Tool
@@ -39,6 +40,7 @@ class Agent(
         }
         // Gemma takes several seconds per step on a phone, so a thinking task gets up to three minutes.
         val limits = TaskLimits(System::currentTimeMillis, maxSteps = 10, maxMillis = 180_000)
+        AssistantRuntime.agentSteps.value = emptyList()
         greeted = false
         var tainted = false
 
@@ -95,7 +97,9 @@ class Agent(
                 speak("The AI model couldn't run. I can still do simple commands")
                 return
             }
-            val call = when (val output = ModelOutputParser.parse(raw)) {
+            val (thought, output) = ModelOutputParser.parseWithThought(raw)
+            thought?.let { AssistantRuntime.note("Thinking: $it") }
+            val call = when (output) {
                 is ModelOutput.Reply -> {
                     // Before any step, a reply that claims an action is false, because nothing was done.
                     if (memory.stepsDone == 0 && ReplyGuard.isFalseActionClaim(request, output.text)) {
@@ -104,6 +108,7 @@ class Agent(
                         return
                     }
                     GemmaEngine.remember(request, output.text)
+                    AssistantRuntime.note("Answer: ${output.text}")
                     speak(output.text)
                     return
                 }
@@ -119,12 +124,35 @@ class Agent(
                 speak(lastResult.ifBlank { "I was going in circles, so I stopped" })
                 return
             }
-            AssistantRuntime.say("Step ${memory.stepsDone + 1}: ${AgentMemory.describe(call)}")
-            val result = run(call, request, heard.verified, tainted, speakResult = false) ?: return
+            AssistantRuntime.note("Doing: ${doing(call)}")
+            val result = run(call, request, heard.verified, tainted, speakResult = false)
+            if (result == null) {
+                AssistantRuntime.note("Stopped")
+                return
+            }
+            AssistantRuntime.note("Found: ${SecretRedactor.redact(result).take(160)}")
             if (call.tool in READS_UNTRUSTED) tainted = true
             memory.record(call, result)
             lastResult = result
             delay(400)
+        }
+    }
+
+    /** A plain description of a step, for the screen. */
+    private fun doing(call: ToolCall): String {
+        val contact = (call.args["contact"] ?: call.args["name"] ?: call.args["to"])?.toString()
+        return when (call.tool) {
+            Tool.PHONE_STATUS -> "Checking the phone's status"
+            Tool.FIND_CONTACT -> "Looking up ${call.text("name")} in contacts"
+            Tool.RECENT_CALLS -> if (contact == null) "Checking recent calls" else "Checking calls with $contact"
+            Tool.RECENT_MESSAGES -> if (contact == null) "Reading recent messages" else "Reading messages from $contact"
+            Tool.CALENDAR_EVENTS -> "Checking your calendar"
+            Tool.LIST_APPS -> "Listing installed apps"
+            Tool.READ_NOTIFICATIONS -> "Reading notifications"
+            Tool.READ_SCREEN -> "Reading the screen"
+            Tool.WEB_ANSWER -> "Looking it up on Google"
+            Tool.SCREEN_TASK -> "Working in the app: ${call.text("goal")}"
+            else -> AgentMemory.describe(call)
         }
     }
 
@@ -184,8 +212,14 @@ class Agent(
             Tool.FLASHLIGHT, Tool.VOLUME, Tool.BRIGHTNESS, Tool.DO_NOT_DISTURB, Tool.SET_ALARM, Tool.SET_TIMER, Tool.READ_NOTIFICATIONS,
             Tool.RINGER_MODE,
         )
-        val READS_UNTRUSTED = setOf(Tool.READ_NOTIFICATIONS, Tool.READ_SCREEN, Tool.SCREEN_TASK, Tool.WEB_ANSWER)
-        val LONG_ANSWERS = setOf(Tool.READ_NOTIFICATIONS, Tool.READ_SCREEN, Tool.WEB_ANSWER)
+        // Text written by other people or websites. After reading it, sending or calling needs your fingerprint.
+        val READS_UNTRUSTED = setOf(
+            Tool.READ_NOTIFICATIONS, Tool.READ_SCREEN, Tool.SCREEN_TASK, Tool.WEB_ANSWER, Tool.RECENT_MESSAGES, Tool.CALENDAR_EVENTS,
+        )
+        val LONG_ANSWERS = setOf(
+            Tool.READ_NOTIFICATIONS, Tool.READ_SCREEN, Tool.WEB_ANSWER, Tool.PHONE_STATUS, Tool.RECENT_CALLS, Tool.RECENT_MESSAGES,
+            Tool.CALENDAR_EVENTS, Tool.LIST_APPS, Tool.FIND_CONTACT,
+        )
         val NO = Regex("\\b(no|nope|cancel|stop|don't|dont|wait|vaddu|nahi|mat)\\b")
         val YES = Regex("\\b(yes|yeah|yep|yup|send|send it|confirm|ok|okay|sure|do it|go ahead|haan|ha|avunu|sare|sari)\\b")
     }

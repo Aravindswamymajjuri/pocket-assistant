@@ -297,6 +297,13 @@ private fun WakeScreen(onClose: () -> Unit) {
                 if (heard.isNotEmpty() && engineName.isNotEmpty()) {
                     Text("Heard with $engineName", style = MaterialTheme.typography.bodySmall)
                 }
+                val steps by AssistantRuntime.agentSteps.collectAsState()
+                // What the assistant is thinking, doing, and finding, step by step.
+                if (steps.isNotEmpty()) {
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        steps.takeLast(6).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
                 if (reply.isNotEmpty()) Text(reply, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
                 OutlinedButton(
                     onClick = {
@@ -326,17 +333,19 @@ private val runtimePermissions = notificationPermission + listOf(
     "Phone calls" to Manifest.permission.CALL_PHONE,
     "SMS" to Manifest.permission.SEND_SMS,
     "Phone state (AI calls)" to Manifest.permission.READ_PHONE_STATE,
-    "Caller number (AI calls)" to Manifest.permission.READ_CALL_LOG,
+    "Call log (AI calls and recent calls)" to Manifest.permission.READ_CALL_LOG,
+    "Read SMS (recent messages)" to Manifest.permission.READ_SMS,
+    "Calendar (your events)" to Manifest.permission.READ_CALENDAR,
     "Answer calls (AI calls)" to Manifest.permission.ANSWER_PHONE_CALLS,
 )
 
 private val categoryNames = mapOf(
     Category.APPS to "Open apps",
-    Category.SYSTEM to "Alarms, device settings, lock",
+    Category.SYSTEM to "Alarms, device settings, phone status, calendar",
     Category.SCREEN to "Screen control",
     Category.NOTIFICATIONS to "Read notifications",
-    Category.MESSAGES to "SMS and WhatsApp",
-    Category.CALLS to "Phone calls",
+    Category.MESSAGES to "SMS and WhatsApp, reading messages",
+    Category.CALLS to "Phone calls, contacts, call history",
     Category.WEB to "Web search",
 )
 
@@ -453,6 +462,15 @@ private fun HomeScreen(activity: FragmentActivity) {
         val partialText by AssistantRuntime.partial.collectAsState()
         if (status == "Listening" && partialText.isNotBlank()) {
             Text(partialText, style = MaterialTheme.typography.titleMedium)
+        }
+        val agentSteps by AssistantRuntime.agentSteps.collectAsState()
+        if (agentSteps.isNotEmpty()) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("How the assistant worked it out", style = MaterialTheme.typography.titleSmall)
+                    agentSteps.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
         }
         if (transcript.isNotEmpty()) {
             Card(Modifier.fillMaxWidth()) {
