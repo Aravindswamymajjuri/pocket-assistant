@@ -11,8 +11,8 @@ android {
         applicationId = "dev.aravind.assistant"
         minSdk = 31
         targetSdk = 32
-        versionCode = 24
-        versionName = "1.1.0"
+        versionCode = 25
+        versionName = "2.0.0"
         ndk { abiFilters += "arm64-v8a" }
     }
     signingConfigs {
@@ -36,6 +36,11 @@ android {
     }
     buildFeatures { compose = true }
     packaging {
+        // The PDF reader's encryption library ships the same manifest file twice, which breaks the build otherwise.
+        resources {
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+            excludes += "META-INF/DEPENDENCIES"
+        }
         jniLibs {
             useLegacyPackaging = true
             pickFirsts += "**/libc++_shared.so"
@@ -66,4 +71,6 @@ dependencies {
     implementation("net.zetetic:sqlcipher-android:4.20.0@aar")
     implementation("androidx.sqlite:sqlite:2.6.2")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
+    // Reads the text of PDF files so the assistant can summarize them.
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 }

@@ -37,6 +37,25 @@ object AssistantRuntime {
     /** Words recognized so far while you're still speaking. */
     val partial = MutableStateFlow("")
 
+    /** The task running now, so the Stop button can cancel it. */
+    @Volatile
+    var taskJob: kotlinx.coroutines.Job? = null
+
+    /** How loud you are while Google listens, from 0 to 1, for the orb animation. */
+    val micLevel = MutableStateFlow(0f)
+
+    /** The app the assistant is working in, shown on the task card. */
+    val currentApp = MutableStateFlow("")
+
+    /** Finished tasks from this session, newest first, for the History screen. */
+    data class TaskRecord(val time: Long, val request: String, val steps: List<String>, val outcome: String)
+
+    val taskHistory = MutableStateFlow<List<TaskRecord>>(emptyList())
+
+    fun finishTask(request: String, outcome: String) {
+        taskHistory.value = (listOf(TaskRecord(System.currentTimeMillis(), request, agentSteps.value, outcome)) + taskHistory.value).take(30)
+    }
+
     /** The steps of the current task: what the AI is thinking, doing, and finding. Shown on screen. */
     val agentSteps = MutableStateFlow<List<String>>(emptyList())
 
@@ -140,6 +159,13 @@ object Features {
 
     fun userName(context: Context): String = prefs(context).getString("user_name", null).orEmpty()
     fun setUserName(context: Context, value: String) = prefs(context).edit().putString("user_name", value.trim().take(30)).apply()
+
+    /** Off until you turn it on: counts which apps, contacts and music you use, to suggest them first. */
+    fun learnUsage(context: Context) = prefs(context).getBoolean("learn_usage", false)
+    fun setLearnUsage(context: Context, value: Boolean) = prefs(context).edit().putBoolean("learn_usage", value).apply()
+
+    fun lightTheme(context: Context) = prefs(context).getBoolean("light_theme", false)
+    fun setLightTheme(context: Context, value: Boolean) = prefs(context).edit().putBoolean("light_theme", value).apply()
 
     fun wakeOnlyMyVoice(context: Context) = prefs(context).getBoolean("wake_my_voice", false)
     fun setWakeOnlyMyVoice(context: Context, value: Boolean) = prefs(context).edit().putBoolean("wake_my_voice", value).apply()

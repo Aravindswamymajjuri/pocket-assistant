@@ -49,6 +49,9 @@ private val categoryNames = mapOf(
     Category.MESSAGES to "WhatsApp messages",
     Category.CALLS to "Calls through Phone Link",
     Category.WEB to "Web search",
+    Category.MEDIA to "Music and camera (phone only)",
+    Category.FILES to "Files (phone only)",
+    Category.MEMORY to "Memory (phone only)",
 )
 
 private fun background(block: () -> Unit) {

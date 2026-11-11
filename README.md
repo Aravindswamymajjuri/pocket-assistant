@@ -28,6 +28,10 @@ Known limits:
 - Wi-Fi and Bluetooth use the settings screen, because Android blocks direct switching for this app
 - There is no allow-list of apps yet, only a block list
 
+## The agent
+
+What the assistant can do on its own, what needs your approval, and Android's limits: see [docs/AGENT.md](docs/AGENT.md).
+
 ## Windows laptop version
 
 The `desktop` folder holds a Windows version that shares the same policy engine and security tests.

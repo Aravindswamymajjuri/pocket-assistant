@@ -46,6 +46,7 @@ class AssistantService : Service() {
     private var engines: VoiceEngines? = null
     private var loop: VoiceLoop? = null
     private var output: VoiceOutput? = null
+    private var agent: Agent? = null
     private var loopJob: Job? = null
     private var callJob: Job? = null
 
@@ -70,6 +71,7 @@ class AssistantService : Service() {
             engines = created
             output = VoiceOutput(created) { loop }
             val agent = Agent(this, ::speak) { hear() }
+            this.agent = agent
             val voiceLoop = VoiceLoop(this, created, scope) { agent.handle(it) }
             loop = voiceLoop
             AssistantRuntime.status.value = "Ready"
@@ -184,6 +186,35 @@ class AssistantService : Service() {
                 },
             )
         }
+    }
+
+    /** A command typed in the app instead of spoken. It runs through the same agent and safety checks. */
+    fun runText(text: String) {
+        val active = agent
+        val command = text.trim().take(500)
+        when {
+            command.isEmpty() -> return
+            active == null -> AssistantRuntime.say("Assistant: The voice system is still starting")
+            !AssistantRuntime.isActive() -> AssistantRuntime.say("Assistant: Turn the assistant on first")
+            AssistantRuntime.taskJob?.isActive == true -> AssistantRuntime.say("Assistant: I'm still working on the last task")
+            else -> scope.launch {
+                AssistantRuntime.status.value = "Working"
+                try {
+                    active.handle(Heard(command, false, FloatArray(0)))
+                } finally {
+                    if (AssistantRuntime.armed.value) AssistantRuntime.status.value = "Ready"
+                }
+            }
+        }
+    }
+
+    /** The Stop button: cancels the running task straight away. Nothing more runs after it. */
+    fun cancelTask() {
+        val job = AssistantRuntime.taskJob ?: return
+        job.cancel()
+        Audit.log(this, "task_cancelled")
+        AssistantRuntime.status.value = if (AssistantRuntime.armed.value) "Ready" else "Off"
+        scope.launch { speak("Stopped") }
     }
 
     /** Saves the last wake word recording as a WAV file in Downloads/PocketAssistant. */
@@ -422,6 +453,48 @@ class AutomationService : AccessibilityService() {
     }
 
     fun pressNode(node: AccessibilityNodeInfo) = press(node)
+
+    /** Taps the first item whose label matches one of [labels], trying exact labels before partial ones. */
+    fun tapAny(labels: List<String>): Boolean {
+        val root = allowedRoot() ?: return false
+        for (wanted in labels) search(root) { label(it) == wanted }?.let { return press(it) }
+        for (wanted in labels) search(root) { label(it).contains(wanted) }?.let { return press(it) }
+        return false
+    }
+
+    /** Taps a spot given as a fraction of the screen size, for buttons with no label, like some camera shutters. */
+    fun tapFraction(x: Float, y: Float): Boolean {
+        if (allowedRoot() == null) return false
+        val metrics = resources.displayMetrics
+        return tapAt(metrics.widthPixels * x, metrics.heightPixels * y)
+    }
+
+    fun longPress(text: String): Boolean {
+        val root = allowedRoot() ?: return false
+        val wanted = text.trim().lowercase()
+        val target = search(root) { label(it) == wanted }
+            ?: search(root) { label(it).startsWith(wanted) }
+            ?: search(root) { wanted.length >= 3 && label(it).contains(wanted) }
+            ?: return false
+        if (target.isLongClickable && target.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) return true
+        val bounds = Rect()
+        target.getBoundsInScreen(bounds)
+        return !bounds.isEmpty && gesture(Path().apply { moveTo(bounds.exactCenterX(), bounds.exactCenterY()) }, 800)
+    }
+
+    /** Types into the text box labelled [field], or else the focused or first text box. Password boxes are never used. */
+    fun enterText(field: String?, text: String): Boolean {
+        val root = allowedRoot() ?: return false
+        fun hint(node: AccessibilityNodeInfo) = (node.hintText?.toString() ?: label(node)).lowercase()
+        val wanted = field?.trim()?.lowercase()
+        val target = (if (wanted.isNullOrEmpty()) null else search(root) { it.isEditable && !it.isPassword && hint(it).contains(wanted) })
+            ?: root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable && !it.isPassword }
+            ?: search(root) { it.isEditable && !it.isPassword }
+            ?: return false
+        return typeInto(target, text)
+    }
+
+    fun showRecents(): Boolean = performGlobalAction(GLOBAL_ACTION_RECENTS)
 
     fun typeInto(node: AccessibilityNodeInfo, text: String): Boolean {
         press(node)

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lets the assistant hand a file you chose to a viewer or share screen. Only files you pick are ever shared. -->
+<paths>
+    <external-path name="storage" path="." />
+</paths>

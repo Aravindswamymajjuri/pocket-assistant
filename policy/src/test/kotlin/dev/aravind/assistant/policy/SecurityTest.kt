@@ -89,7 +89,8 @@ class SecurityTest {
         assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "com.android.permissioncontroller")) is Decision.Deny)
         assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "dev.aravind.assistant")) is Decision.Deny)
         assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "com.oplus.safecenter")) is Decision.Deny)
-        assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "com.android.settings")) is Decision.Allow)
+        // Settings can be controlled. "Allow" is a sensitive button, so it asks first instead of being refused.
+        assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = "com.android.settings")) is Decision.Confirm)
         assertTrue(PolicyEngine.evaluate(tap, ctx.copy(foregroundPackage = null)) is Decision.Deny)
     }
 
@@ -391,7 +392,9 @@ class SecurityTest {
 
     @Test fun notificationsAndTapsRunDirectly() {
         assertTrue(PolicyEngine.evaluate(call("read_notifications"), ctx) is Decision.Allow)
-        assertTrue(PolicyEngine.evaluate(call("tap_text", "text" to "Send"), ctx) is Decision.Allow)
+        // Ordinary taps run directly. Send, pay, delete and similar buttons need a yes first.
+        assertTrue(PolicyEngine.evaluate(call("tap_text", "text" to "Next"), ctx) is Decision.Allow)
+        assertTrue(PolicyEngine.evaluate(call("tap_text", "text" to "Send"), ctx) is Decision.Confirm)
         assertEquals(Tool.READ_NOTIFICATIONS, CommandRouter.route("read my notifications")?.tool)
         assertEquals("Next", CommandRouter.route("tap the Next button")?.text("text"))
     }
@@ -566,5 +569,46 @@ class SecurityTest {
         assertTrue(ModelOutputParser.parseWithThought("""{"thought":5,"reply":"Done"}""").second is ModelOutput.Invalid)
         assertTrue(ModelOutputParser.parse("""{"tool":"phone_status","args":{},"extra":1}""") is ModelOutput.Invalid)
         assertEquals(Tool.RECENT_MESSAGES, (ModelOutputParser.parse("""{"tool":"recent_messages","args":{"contact":"Daddy"}}""") as ModelOutput.Call).call.tool)
+    }
+
+    @Test fun agentToolsAreGuarded() {
+        val ctx = PolicyContext(
+            armed = true, source = Source.LIVE_USER, inPhoneCall = false, tainted = false, voiceVerified = false,
+            gateEnabled = { true }, originalUtterance = "share my notes", foregroundPackage = "com.whatsapp",
+            ownPackage = "dev.aravind.assistant", outboundAllowed = true,
+        )
+        fun decide(json: String, c: PolicyContext = ctx) = PolicyEngine.evaluate((ModelOutputParser.parse(json) as ModelOutput.Call).call, c)
+        assertTrue(decide("""{"tool":"share_file","args":{"file":"1"}}""") is Decision.Confirm)
+        assertTrue(decide("""{"tool":"rename_file","args":{"file":"1","new_name":"notes"}}""") is Decision.Confirm)
+        assertTrue(decide("""{"tool":"take_photo","args":{}}""") is Decision.Confirm)
+        assertTrue(decide("""{"tool":"record_video","args":{"action":"stop"}}""") is Decision.Allow)
+        assertTrue(decide("""{"tool":"tap_text","args":{"text":"Send"}}""") is Decision.Confirm)
+        assertTrue(decide("""{"tool":"tap_text","args":{"text":"Send"}}""", ctx.copy(tainted = true)) is Decision.Biometric)
+        assertTrue(decide("""{"tool":"tap_text","args":{"text":"Chats"}}""") is Decision.Allow)
+        assertTrue(decide("""{"tool":"open_website","args":{"url":"irctc.co.in"}}""") is Decision.Allow)
+        assertTrue(decide("""{"tool":"open_website","args":{"url":"javascript:alert(1)"}}""") is Decision.Deny)
+        assertTrue(decide("""{"tool":"open_website","args":{"url":"intent://scan#Intent;end"}}""") is Decision.Deny)
+        assertTrue(decide("""{"tool":"play_music","args":{"query":"Darling"}}""") is Decision.Allow)
+        assertTrue(decide("""{"tool":"remember","args":{"fact":"My OTP is 482913"}}""") is Decision.Deny)
+        assertTrue(decide("""{"tool":"play_music","args":{}}""", ctx.copy(gateEnabled = { it != Category.MEDIA })) is Decision.Deny)
+        assertEquals("https://irctc.co.in", WebAddress.normalized("irctc.co.in"))
+    }
+
+    @Test fun aiCanAskBack() {
+        assertEquals(ModelOutput.Ask("Which Ravi do you mean?"), ModelOutputParser.parse("""{"ask":"Which Ravi do you mean?"}"""))
+        assertTrue(ModelOutputParser.parse("""{"ask":""}""") is ModelOutput.Invalid)
+        val memory = AgentMemory("send it to Ravi")
+        memory.recordAnswer("Which Ravi?", "Ravi Kumar")
+        assertTrue(memory.prompt().contains("The user said: Ravi Kumar"))
+    }
+
+    @Test fun searchAfterOpeningYouTubeSearchesYouTube() {
+        val steps = CommandRouter.steps("open YouTube and search for Java programming tutorials")
+        val calls = CommandRouter.inContext(steps, steps.map { CommandRouter.route(it) })
+        assertEquals(Tool.OPEN_APP, calls[0]?.tool)
+        assertEquals(Tool.WEB_SEARCH, calls[1]?.tool)
+        assertEquals("youtube", calls[1]?.args?.get("site"))
+        val google = CommandRouter.steps("open YouTube and search on google for Java")
+        assertEquals("google", CommandRouter.inContext(google, google.map { CommandRouter.route(it) })[1]?.args?.get("site"))
     }
 }

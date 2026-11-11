@@ -49,6 +49,8 @@ import java.util.Locale
 /** Runs only calls the policy engine has already approved. It rechecks app and permission limits. */
 class ToolExecutor(private val context: Context) {
 
+    private val phone = PhoneTools(context)
+
     /** The words you said, used when explaining the screen. */
     private var utterance = ""
 
@@ -85,7 +87,37 @@ class ToolExecutor(private val context: Context) {
         Tool.RECENT_CALLS -> recentCalls(call.args["contact"] as? String)
         Tool.RECENT_MESSAGES -> recentMessages(call.args["contact"] as? String)
         Tool.CALENDAR_EVENTS -> calendarEvents((call.args["days"] as? Long)?.toInt() ?: 1)
-        Tool.LIST_APPS -> listApps()
+        Tool.LIST_APPS -> phone.listApps(call.args["query"] as? String)
+        Tool.LONG_PRESS -> automation { if (it.longPress(call.text("text"))) "Done" else "I couldn't find ${call.text("text")} on the screen" }
+        Tool.ENTER_TEXT -> automation {
+            if (it.enterText(call.args["field"] as? String, call.text("text"))) "Typed it" else "I couldn't find a text box to type in"
+        }
+        Tool.RECENT_APPS -> automation { if (it.showRecents()) "Showing recent apps" else "Recent apps couldn't be opened" }
+        Tool.OPEN_WEBSITE -> phone.openWebsite(call.text("url"))
+        Tool.SEARCH_MUSIC -> phone.searchMusic(call.text("query"))
+        Tool.PLAY_MUSIC -> phone.playMusic(call.args["query"] as? String)
+        Tool.MEDIA_CONTROL -> phone.mediaControl(call.text("action"))
+        Tool.SEARCH_FILES -> phone.searchFiles(call.text("query"), call.args["kind"] as? String)
+        Tool.OPEN_FILE -> phone.openFile(call.text("file"))
+        Tool.READ_DOCUMENT -> phone.readDocument(call.text("file"))
+        Tool.SHARE_FILE -> phone.shareFile(call.text("file"), call.args["app"] as? String)
+        Tool.RENAME_FILE -> phone.renameFile(call.text("file"), call.text("new_name"))
+        Tool.MOVE_FILE -> phone.moveFile(call.text("file"), call.text("folder"))
+        Tool.FIND_MEDIA -> phone.findMedia(call.text("kind"), (call.args["days_ago"] as? Long)?.toInt() ?: 0)
+        Tool.OPEN_CAMERA -> phone.openCamera(call.args["mode"] as? String)
+        Tool.TAKE_PHOTO -> phone.takePhoto()
+        Tool.RECORD_VIDEO -> phone.recordVideo(call.text("action"))
+        Tool.CREATE_EVENT -> phone.createEvent(
+            call.text("title"), call.long("days_from_today").toInt(), call.long("hour").toInt(), call.long("minute").toInt(),
+            (call.args["duration_minutes"] as? Long)?.toInt() ?: 60,
+        )
+        Tool.CREATE_REMINDER -> phone.createReminder(
+            call.text("text"), call.long("days_from_today").toInt(), call.long("hour").toInt(), call.long("minute").toInt(),
+        )
+        Tool.DELETE_EVENT -> phone.deleteEvent(call.long("id"))
+        Tool.CALL_CONTROL -> phone.callControl(call.text("action"))
+        Tool.REMEMBER -> phone.remember(call.text("fact"), utterance)
+        Tool.FORGET -> phone.forget(call.text("fact"))
         Tool.OPEN_CHAT -> openChat(call.text("contact"), call.args["app"] as? String ?: "whatsapp")
         Tool.APP_SECTION -> appSection(AppSections.ALL.getValue(call.text("section")))
         Tool.READ_SCREEN -> readScreen(call.args["explain"] as? Boolean ?: false, utterance)
@@ -465,24 +497,20 @@ class ToolExecutor(private val context: Context) {
             ContentUris.appendId(it, start)
             ContentUris.appendId(it, end)
         }.build()
-        val columns = arrayOf(CalendarContract.Instances.TITLE, CalendarContract.Instances.BEGIN, CalendarContract.Instances.ALL_DAY)
+        val columns = arrayOf(
+            CalendarContract.Instances.TITLE, CalendarContract.Instances.BEGIN, CalendarContract.Instances.ALL_DAY, CalendarContract.Instances.EVENT_ID,
+        )
         val lines = ArrayList<String>()
         context.contentResolver.query(uri, columns, null, null, "${CalendarContract.Instances.BEGIN} ASC")?.use { cursor ->
             while (cursor.moveToNext() && lines.size < 8) {
                 val title = SecretRedactor.redact(cursor.getString(0).orEmpty()).take(80).ifBlank { "Untitled event" }
                 val time = if (cursor.getInt(2) == 1) "all day" else whenText(cursor.getLong(1))
-                lines += "$title, $time"
+                lines += "$title, $time (id ${cursor.getLong(3)})"
             }
         }
         return if (lines.isEmpty()) "No events in the next $days day(s)" else lines.joinToString("; ")
     }
 
-    private fun listApps(): String {
-        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val names = context.packageManager.queryIntentActivities(launcher, 0)
-            .map { it.loadLabel(context.packageManager).toString() }.distinct().sortedBy { it.lowercase() }
-        return "${names.size} apps: ${names.take(60).joinToString(", ")}"
-    }
 
     private fun granted(permission: String) =
         context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED

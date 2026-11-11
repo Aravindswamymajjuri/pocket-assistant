@@ -141,6 +141,9 @@ object StrictJson {
 
 sealed interface ModelOutput {
     data class Reply(val text: String) : ModelOutput
+
+    /** A short question back to the user when the request is unclear. */
+    data class Ask(val question: String) : ModelOutput
     data class Call(val call: ToolCall) : ModelOutput
     data class Plan(val calls: List<ToolCall>) : ModelOutput
     data class Invalid(val reason: String) : ModelOutput
@@ -173,6 +176,11 @@ object ModelOutputParser {
     private const val MAX_THOUGHT = 160
 
     private fun fromObject(obj: Map<String, Any?>): ModelOutput {
+        if (obj.keys == setOf("ask")) {
+            val question = (obj["ask"] as? String)?.trim()?.take(200) ?: return ModelOutput.Invalid("ask must be text")
+            if (question.isEmpty()) return ModelOutput.Invalid("ask is empty")
+            return ModelOutput.Ask(question)
+        }
         if (obj.keys == setOf("reply")) {
             val reply = obj["reply"] as? String ?: return ModelOutput.Invalid("reply must be text")
             return ModelOutput.Reply(reply)

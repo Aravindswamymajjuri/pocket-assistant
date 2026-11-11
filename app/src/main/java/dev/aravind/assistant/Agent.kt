@@ -20,6 +20,8 @@ import dev.aravind.assistant.policy.Tool
 import dev.aravind.assistant.policy.ToolCall
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -32,11 +34,32 @@ class Agent(
     private var greeted = false
 
     suspend fun handle(heard: Heard) {
+        AssistantRuntime.taskJob = currentCoroutineContext()[Job]
+        var outcome = "Done"
+        try {
+            outcome = work(heard)
+        } catch (e: CancellationException) {
+            outcome = "Stopped"
+            AssistantRuntime.note("Stopped by you")
+            throw e
+        } finally {
+            AssistantRuntime.taskJob = null
+            AssistantRuntime.finishTask(heard.text, outcome)
+        }
+    }
+
+    /** Speaks [text] and remembers it as the task's outcome. */
+    private suspend fun finish(text: String): String {
+        speak(text)
+        return text
+    }
+
+    private suspend fun work(heard: Heard): String {
         val utterance = heard.text
         AssistantRuntime.say("You: $utterance")
         if (CommandRouter.isStop(utterance)) {
             AssistantRuntime.stopAll(context, "voice")
-            return
+            return "Stopped"
         }
         // Gemma takes several seconds per step on a phone, so a thinking task gets up to three minutes.
         val limits = TaskLimits(System::currentTimeMillis, maxSteps = 10, maxMillis = 180_000)
@@ -47,42 +70,42 @@ class Agent(
         // Splitting stops at the start of a message, so message text is never cut up.
         val steps = CommandRouter.steps(utterance)
         val contacts = executor.contactNames()
-        val routed = steps.map { step ->
-            CommandRouter.route(step, contacts) ?: FuzzyCommand.match(step)?.let { guess ->
-                CommandRouter.route(guess, contacts)?.also { AssistantRuntime.say("Understood as: $guess") }
-            }
-        }
+        val routed = CommandRouter.inContext(
+            steps,
+            steps.map { step ->
+                CommandRouter.route(step, contacts) ?: FuzzyCommand.match(step)?.let { guess ->
+                    CommandRouter.route(guess, contacts)?.also { AssistantRuntime.say("Understood as: $guess") }
+                }
+            },
+        )
 
         // Known commands run straight away. Anything else goes to Gemma, which works it out step by step.
         if (routed.all { it != null }) {
+            var last = "Done"
             for (call in routed.filterNotNull()) {
-                if (!AssistantRuntime.isActive()) return
-                if (!limits.tryStep()) {
-                    speak("That task took too long, so I stopped")
-                    return
-                }
-                run(call, utterance, heard.verified, tainted) ?: return
+                if (!AssistantRuntime.isActive()) return "Stopped"
+                if (!limits.tryStep()) return finish("That task took too long, so I stopped")
+                last = run(call, utterance, heard.verified, tainted) ?: return "Not done"
                 // After reading notifications or the screen, untrusted text has been seen.
                 if (call.tool in READS_UNTRUSTED) tainted = true
                 if (routed.size > 1) delay(700)
             }
-            return
+            return last
         }
-        think(utterance, heard, limits)
+        return think(utterance, heard, limits)
     }
 
     /**
      * Gemma decides what to do: it picks one action, sees its result, and picks the next, until the request is
      * done. Every action still goes through the same safety checks and approvals as a spoken command.
      */
-    private suspend fun think(request: String, heard: Heard, limits: TaskLimits) {
+    private suspend fun think(request: String, heard: Heard, limits: TaskLimits): String {
         val memory = AgentMemory(request)
         var tainted = false
         var lastResult = ""
         while (AssistantRuntime.isActive()) {
             if (!memory.canContinue() || !limits.tryStep()) {
-                speak("I did ${memory.stepsDone} steps but couldn't finish. ${lastResult.take(120)}".trim())
-                return
+                return finish("I did ${memory.stepsDone} steps but couldn't finish. ${lastResult.take(120)}".trim())
             }
             AssistantRuntime.status.value = "Thinking"
             val raw = try {
@@ -90,12 +113,10 @@ class Agent(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: IllegalStateException) {
-                speak(e.message ?: "The AI model isn't ready")
-                return
+                return finish(e.message ?: "The AI model isn't ready")
             } catch (e: Exception) {
                 Audit.log(context, "model_error")
-                speak("The AI model couldn't run. I can still do simple commands")
-                return
+                return finish("The AI model couldn't run. I can still do simple commands")
             }
             val (thought, output) = ModelOutputParser.parseWithThought(raw)
             thought?.let { AssistantRuntime.note("Thinking: $it") }
@@ -104,31 +125,37 @@ class Agent(
                     // Before any step, a reply that claims an action is false, because nothing was done.
                     if (memory.stepsDone == 0 && ReplyGuard.isFalseActionClaim(request, output.text)) {
                         Audit.log(context, "false_claim_blocked")
-                        speak("I didn't understand that as a command, so nothing was done. Please try saying it another way")
-                        return
+                        return finish("I didn't understand that as a command, so nothing was done. Please try saying it another way")
                     }
                     GemmaEngine.remember(request, output.text)
                     AssistantRuntime.note("Answer: ${output.text}")
-                    speak(output.text)
-                    return
+                    return finish(output.text)
+                }
+                is ModelOutput.Ask -> {
+                    // The request was unclear, so it asks you and carries on with your answer.
+                    AssistantRuntime.note("Asking: ${output.question}")
+                    speak(output.question)
+                    val answer = listen()?.text?.trim().orEmpty()
+                    if (answer.isEmpty()) return finish("I didn't hear an answer, so I stopped")
+                    if (CommandRouter.isStop(answer)) return finish("OK, stopped")
+                    AssistantRuntime.say("You: $answer")
+                    AssistantRuntime.note("You said: $answer")
+                    memory.recordAnswer(output.question, answer)
+                    continue
                 }
                 is ModelOutput.Invalid -> {
                     Audit.log(context, "model_output_rejected")
-                    speak(if (memory.stepsDone == 0) "I couldn't work out a safe action for that" else lastResult.ifBlank { "Done" })
-                    return
+                    return finish(if (memory.stepsDone == 0) "I couldn't work out a safe action for that" else lastResult.ifBlank { "Done" })
                 }
                 is ModelOutput.Call -> output.call
                 is ModelOutput.Plan -> output.calls.first()
             }
-            if (!memory.allow(call)) {
-                speak(lastResult.ifBlank { "I was going in circles, so I stopped" })
-                return
-            }
+            if (!memory.allow(call)) return finish(lastResult.ifBlank { "I was going in circles, so I stopped" })
             AssistantRuntime.note("Doing: ${doing(call)}")
             val result = run(call, request, heard.verified, tainted, speakResult = false)
             if (result == null) {
                 AssistantRuntime.note("Stopped")
-                return
+                return "Not done"
             }
             AssistantRuntime.note("Found: ${SecretRedactor.redact(result).take(160)}")
             if (call.tool in READS_UNTRUSTED) tainted = true
@@ -136,6 +163,25 @@ class Agent(
             lastResult = result
             delay(400)
         }
+        return "Stopped"
+    }
+
+    /** With "Learn from my usage" on, counts the apps and contacts you use, so the AI can suggest them first. */
+    private fun learn(call: ToolCall) {
+        when (call.tool) {
+            Tool.OPEN_APP -> MemoryStore.recordUsage(context, "app", call.text("name"))
+            Tool.PLACE_CALL, Tool.SEND_SMS, Tool.SEND_WHATSAPP -> MemoryStore.recordUsage(context, "contact", call.text("to"))
+            Tool.OPEN_CHAT -> MemoryStore.recordUsage(context, "contact", call.text("contact"))
+            else -> Unit
+        }
+    }
+
+    private fun appName(packageName: String?): String {
+        if (packageName.isNullOrBlank()) return ""
+        return runCatching {
+            val pm = context.packageManager
+            pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
+        }.getOrDefault(packageName)
     }
 
     /** A plain description of a step, for the screen. */
@@ -152,6 +198,26 @@ class Agent(
             Tool.READ_SCREEN -> "Reading the screen"
             Tool.WEB_ANSWER -> "Looking it up on Google"
             Tool.SCREEN_TASK -> "Working in the app: ${call.text("goal")}"
+            Tool.SEARCH_MUSIC -> "Searching your music for ${call.text("query")}"
+            Tool.PLAY_MUSIC -> (call.args["query"] as? String)?.let { "Playing $it from your music" } ?: "Playing your music"
+            Tool.MEDIA_CONTROL -> "Music: ${call.text("action")}"
+            Tool.SEARCH_FILES -> "Searching files for ${call.text("query")}"
+            Tool.OPEN_FILE -> "Opening file ${call.text("file")}"
+            Tool.READ_DOCUMENT -> "Reading file ${call.text("file")}"
+            Tool.SHARE_FILE -> "Sharing file ${call.text("file")}"
+            Tool.RENAME_FILE -> "Renaming file ${call.text("file")}"
+            Tool.MOVE_FILE -> "Moving file ${call.text("file")} to ${call.text("folder")}"
+            Tool.FIND_MEDIA -> "Looking for ${call.text("kind")}s"
+            Tool.OPEN_CAMERA -> "Opening the camera"
+            Tool.TAKE_PHOTO -> "Taking a photo"
+            Tool.RECORD_VIDEO -> "Video: ${call.text("action")} recording"
+            Tool.CREATE_EVENT -> "Adding \"${call.text("title")}\" to your calendar"
+            Tool.CREATE_REMINDER -> "Setting a reminder: ${call.text("text")}"
+            Tool.DELETE_EVENT -> "Deleting calendar event ${call.long("id")}"
+            Tool.OPEN_WEBSITE -> "Opening ${call.text("url")}"
+            Tool.ENTER_TEXT -> "Typing into the screen"
+            Tool.REMEMBER -> "Saving to memory"
+            Tool.FORGET -> "Removing from memory"
             else -> AgentMemory.describe(call)
         }
     }
@@ -198,6 +264,8 @@ class Agent(
         }
         Gates.markUsed(context, call.tool.category)
         Audit.log(context, "done:${call.tool.id}")
+        learn(call)
+        AssistantRuntime.currentApp.value = appName(AutomationService.instance?.targetPackage())
         // Uses your name for the first reply of a request, like "OK Aravind, flashlight on".
         if (speakResult) {
             val name = Features.userName(context)
@@ -227,7 +295,8 @@ class Agent(
     /** Reads the message back and waits for a spoken yes. If it doesn't hear one, it shows a Send button. */
     private suspend fun quickApprove(call: ToolCall, readback: String, foreground: String?): Boolean {
         val authority: ConfirmationAuthority = AssistantRuntime.authority ?: return false
-        speak("$readback. Say yes to send, or no to cancel")
+        val verb = if (call.tool.hasRecipient) "send" else "go ahead"
+        speak("$readback. Say yes to $verb, or no to cancel")
         val answer = listen()?.text?.lowercase().orEmpty()
         when {
             NO.containsMatchIn(answer) -> {

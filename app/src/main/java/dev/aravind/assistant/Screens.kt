@@ -48,6 +48,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -239,7 +243,7 @@ class WakeActivity : FragmentActivity() {
         WakeUi.visible = true
         WakeUi.clearNotification(this)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) { WakeScreen(onClose = ::finish) }
+            AssistantColors { WakeScreen(onClose = ::finish) }
         }
     }
 
@@ -283,15 +287,10 @@ private fun WakeScreen(onClose: () -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Box(
-                    Modifier.size(64.dp)
-                        .graphicsLayer {
-                            scaleX = pulse.value
-                            scaleY = pulse.value
-                        }
-                        .background(MaterialTheme.colorScheme.primary, CircleShape),
-                )
-                Text(if (status == "Ready") "Done" else status, style = MaterialTheme.typography.titleLarge)
+                VoiceOrb(status, 96.dp) {
+                    AssistantService.instance?.let { it.startService(Intent(it, AssistantService::class.java).setAction(AssistantService.ACTION_LISTEN)) }
+                }
+                Text(if (status == "Ready") "Done" else statusLabel(status), style = MaterialTheme.typography.titleLarge)
                 if (heard.isNotEmpty()) Text(heard, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
                 val engineName by AssistantRuntime.lastEngine.collectAsState()
                 if (heard.isNotEmpty() && engineName.isNotEmpty()) {
@@ -300,16 +299,24 @@ private fun WakeScreen(onClose: () -> Unit) {
                 val steps by AssistantRuntime.agentSteps.collectAsState()
                 // What the assistant is thinking, doing, and finding, step by step.
                 if (steps.isNotEmpty()) {
-                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        steps.takeLast(6).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        steps.takeLast(5).forEach { StepRow(it) }
                     }
                 }
                 if (reply.isNotEmpty()) Text(reply, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
-                OutlinedButton(
-                    onClick = {
-                        AssistantService.instance?.let { it.startService(Intent(it, AssistantService::class.java).setAction(AssistantService.ACTION_LISTEN)) }
-                    },
-                ) { Text("Talk again") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (status == "Thinking" || status == "Working") {
+                        Button(
+                            onClick = { AssistantService.instance?.cancelTask() },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        ) { Text("Stop") }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            AssistantService.instance?.let { it.startService(Intent(it, AssistantService::class.java).setAction(AssistantService.ACTION_LISTEN)) }
+                        },
+                    ) { Text("Talk again") }
+                }
             }
         }
     }
@@ -317,9 +324,7 @@ private fun WakeScreen(onClose: () -> Unit) {
 
 @Composable
 private fun AppTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = darkColorScheme()) {
-        Surface(Modifier.fillMaxSize()) { content() }
-    }
+    AssistantTheme(content)
 }
 
 /** Android 12 lets apps post notifications without this permission. */
@@ -336,6 +341,8 @@ private val runtimePermissions = notificationPermission + listOf(
     "Call log (AI calls and recent calls)" to Manifest.permission.READ_CALL_LOG,
     "Read SMS (recent messages)" to Manifest.permission.READ_SMS,
     "Calendar (your events)" to Manifest.permission.READ_CALENDAR,
+    "Calendar changes (add events and reminders)" to Manifest.permission.WRITE_CALENDAR,
+    "Storage (music, photos and files)" to Manifest.permission.READ_EXTERNAL_STORAGE,
     "Answer calls (AI calls)" to Manifest.permission.ANSWER_PHONE_CALLS,
 )
 
@@ -346,7 +353,10 @@ private val categoryNames = mapOf(
     Category.NOTIFICATIONS to "Read notifications",
     Category.MESSAGES to "SMS and WhatsApp, reading messages",
     Category.CALLS to "Phone calls, contacts, call history",
-    Category.WEB to "Web search",
+    Category.WEB to "Web search and websites",
+    Category.MEDIA to "Music and camera",
+    Category.FILES to "Files, photos and documents",
+    Category.MEMORY to "Memory",
 )
 
 @Composable
@@ -407,22 +417,50 @@ private fun HomeScreen(activity: FragmentActivity) {
         }
     }
 
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        bottomBar = {
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                listOf("◉" to "Assistant", "☰" to "History", "✦" to "Memory", "⚙" to "Settings").forEachIndexed { index, (glyph, name) ->
+                    NavigationBarItem(
+                        selected = tab == index,
+                        onClick = { tab = index },
+                        icon = { Text(glyph, style = MaterialTheme.typography.titleMedium) },
+                        label = { Text(name) },
+                    )
+                }
+            }
+        },
+    ) { inner ->
     Column(
-        Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp),
+        Modifier.fillMaxSize().padding(inner).statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Pocket Assistant", style = MaterialTheme.typography.headlineMedium)
-        TabRow(selectedTabIndex = tab) {
-            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Assistant") })
-            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Settings") })
-        }
         if (message.isNotEmpty()) Text(message, style = MaterialTheme.typography.bodySmall)
 
         if (tab == 0) {
-        Text(
-            "Say \"${WakeName.phrase(Features.wakeName(activity)).lowercase()}\" or tap Talk",
-            style = MaterialTheme.typography.bodyLarge,
-        )
+        val partialText by AssistantRuntime.partial.collectAsState()
+        Column(
+            Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            VoiceOrb(status, 180.dp) {
+                if (armed) {
+                    activity.startService(Intent(activity, AssistantService::class.java).setAction(AssistantService.ACTION_LISTEN))
+                } else {
+                    message = "Turn the assistant on first"
+                }
+            }
+            Text(statusLabel(status), style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (status == "Listening" && partialText.isNotBlank()) partialText
+                else "Say \"${WakeName.phrase(Features.wakeName(activity)).lowercase()}\", tap the orb, or type below",
+                style = if (status == "Listening") MaterialTheme.typography.titleLarge else MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+            )
+        }
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 ToggleRow("Assistant", status, armed) { on ->
@@ -459,27 +497,24 @@ private fun HomeScreen(activity: FragmentActivity) {
             }
         }
 
-        val partialText by AssistantRuntime.partial.collectAsState()
-        if (status == "Listening" && partialText.isNotBlank()) {
-            Text(partialText, style = MaterialTheme.typography.titleMedium)
+        TaskPanel(onStop = { AssistantService.instance?.cancelTask() })
+        CommandBar { text ->
+            val service = AssistantService.instance
+            if (service == null) message = "Turn on the assistant first" else service.runText(text)
         }
-        val agentSteps by AssistantRuntime.agentSteps.collectAsState()
-        if (agentSteps.isNotEmpty()) {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("How the assistant worked it out", style = MaterialTheme.typography.titleSmall)
-                    agentSteps.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
-                }
-            }
-        }
-        if (transcript.isNotEmpty()) {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    transcript.takeLast(8).forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                }
-            }
-        }
+        if (transcript.isNotEmpty()) ChatHistory(transcript)
+        } else if (tab == 1) {
+        HistoryScreen(activity)
+        } else if (tab == 2) {
+        MemoryScreen(activity)
         } else {
+        Section("Appearance")
+        val lightOn = remember(refreshKey) { Features.lightTheme(activity) }
+        ToggleRow("Light theme", "Switch between the dark and light look", lightOn) { on ->
+            Features.setLightTheme(activity, on)
+            UiPrefs.light.value = on
+            refresh++
+        }
         Section("Control Center")
         Text("Tool switches", style = MaterialTheme.typography.titleSmall)
         Category.entries.forEach { category ->
@@ -840,6 +875,7 @@ private fun HomeScreen(activity: FragmentActivity) {
             Modifier.fillMaxWidth(),
         ) { Text("Delete all assistant data") }
         }
+    }
     }
 }
 

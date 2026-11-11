@@ -25,6 +25,11 @@ class AgentMemory(private val request: String, private val maxSteps: Int = MAX_S
         done += "${done.size + 1}. ${describe(call)} -> $clean"
     }
 
+    /** A question the AI asked and what the user answered. */
+    fun recordAnswer(question: String, answer: String) {
+        done += "${done.size + 1}. Asked the user: ${question.take(150)} -> The user said: ${SecretRedactor.redact(answer).take(150)}"
+    }
+
     /** What the AI sees before choosing its next step. */
     fun prompt(): String = buildString {
         append("The user asked: \"").append(request.take(300)).append("\"\n")

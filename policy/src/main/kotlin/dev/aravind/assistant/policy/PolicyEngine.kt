@@ -89,6 +89,13 @@ object Readback {
         Tool.WIFI -> "Turn Wi-Fi ${if (call.bool("on")) "on" else "off"}"
         Tool.BLUETOOTH -> "Turn Bluetooth ${if (call.bool("on")) "on" else "off"}"
         Tool.DO_NOT_DISTURB -> "Turn Do Not Disturb ${if (call.bool("on")) "on" else "off"}"
+        Tool.LONG_PRESS -> "Long-press \"${call.text("text")}\" on the current screen"
+        Tool.SHARE_FILE -> "Share file ${call.text("file")}" + ((call.args["app"] as? String)?.let { " with $it" } ?: "")
+        Tool.RENAME_FILE -> "Rename file ${call.text("file")} to \"${call.text("new_name")}\""
+        Tool.MOVE_FILE -> "Move file ${call.text("file")} to ${call.text("folder")}"
+        Tool.TAKE_PHOTO -> "Take a photo with the camera"
+        Tool.RECORD_VIDEO -> "Start recording a video"
+        Tool.DELETE_EVENT -> "Delete calendar event ${call.long("id")}"
         else -> call.tool.description
     }
 }
@@ -114,6 +121,16 @@ object PolicyEngine {
             return Decision.Deny("I can't control this screen. Open the app you want first, then ask again")
         }
 
+        if (call.tool == Tool.OPEN_WEBSITE && !WebAddress.isSafe(call.text("url"))) {
+            return Decision.Deny("I only open normal web addresses")
+        }
+        // Stopping a recording is always fine. Starting one needs a yes.
+        if (call.tool == Tool.RECORD_VIDEO && call.text("action") == "stop") return Decision.Allow
+        // Taps on Send, Pay, Delete and similar buttons need your yes, like sending a message does.
+        if ((call.tool == Tool.TAP_TEXT || call.tool == Tool.LONG_PRESS) && ScreenAgent.isRisky(call.text("text"))) {
+            return if (ctx.tainted) Decision.Biometric(Readback.of(call)) else Decision.Confirm(Readback.of(call))
+        }
+
         if (call.tool.hasRecipient) {
             val target = call.text("to")
             if (PhoneTarget.looksLikeNumber(target) && !PhoneTarget.isSafe(target)) {
@@ -137,6 +154,15 @@ object PolicyEngine {
             else -> Decision.Deny("Do this manually")
         }
     }
+}
+
+/** Only plain web addresses can be opened: no app links, files, scripts or phone codes. */
+object WebAddress {
+    private val allowed = Regex("^(https?://)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\\.[a-z]{2,}(:\\d{2,5})?(/[^\\s]*)?$", RegexOption.IGNORE_CASE)
+
+    fun isSafe(url: String): Boolean = allowed.matches(url.trim())
+
+    fun normalized(url: String): String = url.trim().let { if (it.startsWith("http://", true) || it.startsWith("https://", true)) it else "https://$it" }
 }
 
 /** Limits one task, so a loop or an injected instruction can't keep acting. */

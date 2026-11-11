@@ -2,6 +2,22 @@ package dev.aravind.assistant.policy
 
 /** Common commands run without Gemma, so they stay fast and predictable. */
 object CommandRouter {
+    /**
+     * Fixes steps that depend on the step before: "open YouTube and search for Java tutorials"
+     * searches inside YouTube, not on Google.
+     */
+    fun inContext(steps: List<String>, calls: List<ToolCall?>): List<ToolCall?> = calls.mapIndexed { index, call ->
+        val previous = calls.getOrNull(index - 1)
+        val saidGoogle = steps.getOrNull(index).orEmpty().contains("google", ignoreCase = true)
+        if (call?.tool == Tool.WEB_SEARCH && call.args["site"] != "youtube" && !saidGoogle && previous?.tool == Tool.OPEN_APP &&
+            previous.text("name").contains("youtube", ignoreCase = true)
+        ) {
+            call.copy(args = call.args + ("site" to "youtube"))
+        } else {
+            call
+        }
+    }
+
     private val stop = Regex("(?i)^(?:please\\s+)?(?:stop|cancel|turn off|shut down|be quiet|quiet)(?:\\s+(?:now|listening|assistant))?[.!]*$")
     private const val VERBS =
         "(?:open|launch|start|close|send|message|msg|text|whats ?app|sms|tell|call|dial|phone|ring|set|turn|switch|enable|" +

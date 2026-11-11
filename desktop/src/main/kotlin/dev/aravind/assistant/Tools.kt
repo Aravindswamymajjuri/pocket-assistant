@@ -261,6 +261,10 @@ class Agent(private val speak: (String) -> Unit, private val listen: () -> Heard
                         speak("I couldn't work out a safe action for that")
                         return
                     }
+                    is ModelOutput.Ask -> {
+                        speak(output.question)
+                        return
+                    }
                     is ModelOutput.Call -> listOf(output.call)
                     is ModelOutput.Plan -> output.calls
                 }

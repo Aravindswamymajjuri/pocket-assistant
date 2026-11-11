@@ -4,7 +4,7 @@ package dev.aravind.assistant.policy
 enum class Risk { L0_SAFE, L1_PERSONAL, L2_OUTBOUND, L3_SECURITY, L4_BLOCKED }
 
 /** Each category has its own switch in the Control Center. */
-enum class Category { APPS, SYSTEM, SCREEN, NOTIFICATIONS, MESSAGES, CALLS, WEB }
+enum class Category { APPS, SYSTEM, SCREEN, NOTIFICATIONS, MESSAGES, CALLS, WEB, MEDIA, FILES, MEMORY }
 
 sealed interface ParamSpec {
     val required: Boolean
@@ -89,7 +89,96 @@ enum class Tool(
         "calendar_events", Risk.L0_SAFE, Category.SYSTEM,
         mapOf("days" to IntParam(1, 7, required = false)), "List calendar events for today and the next few days",
     ),
-    LIST_APPS("list_apps", Risk.L0_SAFE, Category.APPS, description = "List the apps installed on the phone"),
+    LIST_APPS(
+        "list_apps", Risk.L0_SAFE, Category.APPS,
+        mapOf("query" to TextParam(60, required = false)), "List or search the apps installed on the phone",
+    ),
+    LONG_PRESS("long_press", Risk.L0_SAFE, Category.SCREEN, mapOf("text" to TextParam(80)), "Long-press a visible button or label"),
+    ENTER_TEXT(
+        "enter_text", Risk.L0_SAFE, Category.SCREEN,
+        mapOf("text" to TextParam(300), "field" to TextParam(80, required = false)),
+        "Type text into a text box on the screen, optionally the box with this label",
+    ),
+    RECENT_APPS("recent_apps", Risk.L0_SAFE, Category.SCREEN, description = "Show recent apps, to switch between apps"),
+    OPEN_WEBSITE("open_website", Risk.L0_SAFE, Category.WEB, mapOf("url" to TextParam(300)), "Open a website address in the browser"),
+    SEARCH_MUSIC(
+        "search_music", Risk.L0_SAFE, Category.MEDIA,
+        mapOf("query" to TextParam(80)), "Find songs stored on the phone by song, movie, album or artist name",
+    ),
+    PLAY_MUSIC(
+        "play_music", Risk.L0_SAFE, Category.MEDIA,
+        mapOf("query" to TextParam(80, required = false)),
+        "Play songs stored on the phone that match a song, movie, album or artist. Without a query, play all songs",
+    ),
+    MEDIA_CONTROL(
+        "media_control", Risk.L0_SAFE, Category.MEDIA,
+        mapOf("action" to ChoiceParam(setOf("pause", "resume", "next", "previous", "stop"))),
+        "Pause, resume, skip or stop the music or video that is playing",
+    ),
+    SEARCH_FILES(
+        "search_files", Risk.L0_SAFE, Category.FILES,
+        mapOf("query" to TextParam(80), "kind" to ChoiceParam(setOf("any", "document", "pdf", "image", "video", "audio"), required = false)),
+        "Search files on the phone by name. Results are numbered for the other file tools",
+    ),
+    OPEN_FILE("open_file", Risk.L0_SAFE, Category.FILES, mapOf("file" to TextParam(200)), "Open a file by its number from the last search, or its name"),
+    READ_DOCUMENT(
+        "read_document", Risk.L0_SAFE, Category.FILES,
+        mapOf("file" to TextParam(200)), "Read the text of a PDF or text file by its number from the last search, to summarize it",
+    ),
+    SHARE_FILE(
+        "share_file", Risk.L2_OUTBOUND, Category.FILES,
+        mapOf("file" to TextParam(200), "app" to TextParam(40, required = false)),
+        "Share a file by its number from the last search, optionally with an app like WhatsApp",
+    ),
+    RENAME_FILE(
+        "rename_file", Risk.L2_OUTBOUND, Category.FILES,
+        mapOf("file" to TextParam(200), "new_name" to TextParam(80)), "Rename a file by its number from the last search",
+    ),
+    MOVE_FILE(
+        "move_file", Risk.L2_OUTBOUND, Category.FILES,
+        mapOf("file" to TextParam(200), "folder" to ChoiceParam(FileFolders.ALL)),
+        "Move a file by its number from the last search into a main folder: ${FileFolders.ALL.joinToString()}",
+    ),
+    FIND_MEDIA(
+        "find_media", Risk.L0_SAFE, Category.FILES,
+        mapOf("kind" to ChoiceParam(setOf("photo", "video")), "days_ago" to IntParam(0, 365, required = false)),
+        "Find photos or videos taken on one day. days_ago 0 is today, 1 is yesterday",
+    ),
+    OPEN_CAMERA(
+        "open_camera", Risk.L0_SAFE, Category.MEDIA,
+        mapOf("mode" to ChoiceParam(setOf("photo", "video"), required = false)), "Open the camera app",
+    ),
+    TAKE_PHOTO("take_photo", Risk.L2_OUTBOUND, Category.MEDIA, description = "Take a photo with the camera app, after the user confirms"),
+    RECORD_VIDEO(
+        "record_video", Risk.L2_OUTBOUND, Category.MEDIA,
+        mapOf("action" to ChoiceParam(setOf("start", "stop"))), "Start recording a video after the user confirms, or stop recording",
+    ),
+    CREATE_EVENT(
+        "create_event", Risk.L0_SAFE, Category.SYSTEM,
+        mapOf(
+            "title" to TextParam(100), "days_from_today" to IntParam(0, 365), "hour" to IntParam(0, 23), "minute" to IntParam(0, 59),
+            "duration_minutes" to IntParam(5, 1440, required = false),
+        ),
+        "Add an event to the calendar. Use a 24-hour time",
+    ),
+    CREATE_REMINDER(
+        "create_reminder", Risk.L0_SAFE, Category.SYSTEM,
+        mapOf("text" to TextParam(100), "days_from_today" to IntParam(0, 365), "hour" to IntParam(0, 23), "minute" to IntParam(0, 59)),
+        "Remind the user about something at a time. Use a 24-hour time",
+    ),
+    DELETE_EVENT(
+        "delete_event", Risk.L2_OUTBOUND, Category.SYSTEM,
+        mapOf("id" to IntParam(1, Long.MAX_VALUE)), "Delete a calendar event by the id shown by calendar_events",
+    ),
+    CALL_CONTROL(
+        "call_control", Risk.L0_SAFE, Category.CALLS,
+        mapOf("action" to ChoiceParam(setOf("answer", "reject"))), "Answer or reject the call that is ringing now",
+    ),
+    REMEMBER(
+        "remember", Risk.L0_SAFE, Category.MEMORY,
+        mapOf("fact" to TextParam(200)), "Save a preference or fact, only when the user asks you to remember it",
+    ),
+    FORGET("forget", Risk.L0_SAFE, Category.MEMORY, mapOf("fact" to TextParam(200)), "Forget something the user asked you to remember"),
     OPEN_CHAT(
         "open_chat", Risk.L0_SAFE, Category.MESSAGES,
         mapOf("contact" to TextParam(60), "app" to ChoiceParam(setOf("whatsapp", "sms"), required = false)),
@@ -114,6 +203,11 @@ enum class Tool(
         private val byId = entries.associateBy { it.id }
         fun find(id: String): Tool? = byId[id]
     }
+}
+
+/** Main storage folders a file can be moved into. */
+object FileFolders {
+    val ALL = setOf("Download", "Documents", "Pictures", "Music", "Movies", "DCIM")
 }
 
 /** Phone modes with no public Android switch. The phone app flips their Quick Settings tiles. */
