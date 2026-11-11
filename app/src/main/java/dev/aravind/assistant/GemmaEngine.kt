@@ -251,7 +251,7 @@ object GemmaEngine {
                 val fresh = current.createConversation()
                 conversation = fresh
                 engineUsed = current
-                active = this
+                active = this@AgentChat
                 try {
                     fresh.sendMessage(firstPrompt(context, memory.prompt(), offered)).toString()
                 } finally {
@@ -270,7 +270,7 @@ object GemmaEngine {
         suspend fun close() {
             mutex.withLock {
                 closeConversation()
-                if (active === this) active = null
+                if (active === this@AgentChat) active = null
             }
         }
     }
